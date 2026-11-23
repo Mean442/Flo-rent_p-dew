@@ -257,7 +257,7 @@
 
     window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; OpenStreetMap'
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>'
     }).addTo(map);
 
     var marker = null;
@@ -1495,6 +1495,83 @@
 
     var flash = '';
     var myItems = [];
+    var incoming = [];
+
+    function incomingRow(booking) {
+      var status = BOOKING_STATUS[booking.status] || BOOKING_STATUS.pending;
+      var actions = '';
+      if (booking.status === 'pending') {
+        actions = '<div class="booking-actions">' +
+          '<button class="btn-mini" type="button" data-owner-act="confirm" data-code="' + esc(booking.code) + '">ยืนยันการจอง</button>' +
+          '<button class="btn-ghost" type="button" data-owner-act="reject" data-code="' + esc(booking.code) + '">ปฏิเสธ</button>' +
+        '</div>';
+      } else if (booking.status === 'active') {
+        actions = '<p class="fine-print" style="margin-top:8px">ยืนยันแล้ว — รอผู้เช่ามารับของและกดคืนสินค้า</p>';
+      } else if (booking.status === 'returned') {
+        actions = '<p class="fine-print" style="margin-top:8px">คืนของครบแล้ว · ได้รับค่าเช่า ' +
+          baht(Number(booking.total || 0) - Number(booking.deposit || 0)) + '</p>';
+      } else {
+        actions = '<p class="fine-print" style="margin-top:8px">ถูกยกเลิกแล้ว · เงินถูกคืนผู้เช่าเต็มจำนวน</p>';
+      }
+
+      return '' +
+        '<article class="booking-item">' +
+          '<div class="booking-thumb thumb thumb-' + esc(booking.itemCat || 'general') + '">' +
+            '<span aria-hidden="true">' + esc(booking.itemEmoji || '📦') + '</span>' +
+          '</div>' +
+          '<div>' +
+            '<span class="booking-code">' + esc(booking.code) + ' · ขอเมื่อ ' + thDate(booking.createdAt) + '</span>' +
+            '<h2><a href="item.html?id=' + encodeURIComponent(booking.itemId) + '">' + esc(booking.itemTitle) + '</a></h2>' +
+            '<p class="item-meta">ผู้เช่า ' + esc(booking.userName || '—') + ' · ' + thDate(booking.start) + ' → ' +
+              thDate(booking.end) + ' · ' + booking.days + ' วัน</p>' +
+            actions +
+          '</div>' +
+          '<div class="booking-side">' +
+            '<span class="badge ' + status.cls + '">' + status.label + '</span>' +
+            '<strong>' + baht(booking.total) + '</strong>' +
+            '<span class="booking-code">มัดจำ ' + baht(booking.deposit) + '</span>' +
+          '</div>' +
+        '</article>';
+    }
+
+    function incomingSection() {
+      var waiting = incoming.filter(function (booking) { return booking.status === 'pending'; }).length;
+      return '' +
+        '<section style="margin-top:26px">' +
+          '<div class="section-head" style="margin-bottom:16px;padding-bottom:12px">' +
+            '<h2 style="font-size:22px">คำขอจองที่เข้ามา' +
+              (waiting ? ' <span class="badge badge-pending">รอยืนยัน ' + waiting + '</span>' : '') + '</h2>' +
+            '<span class="item-meta">ยืนยันหรือปฏิเสธได้จากที่นี่</span>' +
+          '</div>' +
+          (incoming.length
+            ? '<div class="booking-list" id="incoming-bookings">' + incoming.map(incomingRow).join('') + '</div>'
+            : '<p class="muted">ยังไม่มีคำขอจอง — เมื่อมีคนขอเช่าสินค้าของคุณ รายการจะขึ้นที่นี่</p>') +
+        '</section>';
+    }
+
+    async function ownerAction(btn) {
+      var action = btn.getAttribute('data-owner-act');
+      var code = btn.getAttribute('data-code');
+      if (action === 'reject') {
+        var sure = await confirmDialog({
+          eyebrow: 'ปฏิเสธการจอง',
+          title: 'ปฏิเสธการจอง ' + code + '?',
+          message: 'ผู้เช่าจะได้รับเงินคืนทั้งจำนวน และการจองนี้จะถูกยกเลิก',
+          confirmText: 'ปฏิเสธการจอง'
+        });
+        if (!sure) return;
+      }
+
+      btn.disabled = true;
+      try {
+        await API.patch('/owner/bookings/' + encodeURIComponent(code), { action: action });
+        toast(action === 'confirm' ? 'ยืนยันการจองแล้ว ผู้เช่าเห็นสถานะใหม่ทันที' : 'ปฏิเสธการจองและคืนเงินผู้เช่าแล้ว', 'ok');
+        await render();
+      } catch (err) {
+        btn.disabled = false;
+        showError(err);
+      }
+    }
 
     function manageCard(item) {
       var hidden = item.status === 'hidden';
@@ -1611,6 +1688,14 @@
         return;
       }
 
+      /* คำขอจองที่เข้ามา: ถ้าเซิร์ฟเวอร์รุ่นเก่ายังไม่มีเส้นนี้ หน้าบัญชีก็ต้องใช้งานได้ปกติ */
+      incoming = [];
+      try {
+        incoming = (await API.get('/owner/bookings')).bookings || [];
+      } catch (err) {
+        incoming = [];
+      }
+
       var user = me.user;
       var stats = me.stats;
       var avatar = user.avatar || '🙂';
@@ -1665,6 +1750,7 @@
                 '<a class="btn btn-outline" href="bookings.html">ประวัติการจอง</a>' +
               '</div>' +
             '</form>' +
+            (mine.length || incoming.length ? incomingSection() : '') +
             '<section style="margin-top:26px">' +
               '<div class="section-head" style="margin-bottom:16px;padding-bottom:12px">' +
                 '<h2 style="font-size:22px">ประกาศของฉัน</h2>' +
@@ -1698,6 +1784,14 @@
         mineGrid.addEventListener('click', function (event) {
           var btn = event.target.closest('[data-manage]');
           if (btn) manageItem(btn);
+        });
+      }
+
+      var incomingList = $('incoming-bookings');
+      if (incomingList) {
+        incomingList.addEventListener('click', function (event) {
+          var btn = event.target.closest('[data-owner-act]');
+          if (btn) ownerAction(btn);
         });
       }
 
@@ -1794,7 +1888,8 @@
       if (booking.status === 'pending') {
         actions = '<div class="booking-actions">' +
           '<button class="btn-ghost" type="button" data-act="cancel" data-code="' + esc(booking.code) + '">ยกเลิกการจอง</button>' +
-        '</div>';
+        '</div>' +
+        '<p class="fine-print" style="margin-top:8px">รอผู้ให้เช่ายืนยัน — เงินถูกกันไว้ใน Wallet แล้ว</p>';
       } else if (booking.status === 'active') {
         actions = '<div class="booking-actions">' +
           '<button class="btn-mini" type="button" data-act="return" data-code="' + esc(booking.code) + '">คืนสินค้าแล้ว</button>' +

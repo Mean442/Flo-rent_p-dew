@@ -51,7 +51,8 @@ function jobCatOf(key) {
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
-  'Referrer-Policy': 'same-origin'
+  /* ต้องส่ง Referer (origin) ไปด้วย ไม่งั้น tile ของ OpenStreetMap จะตอบ 403 Access blocked */
+  'Referrer-Policy': 'strict-origin-when-cross-origin'
 };
 
 const MIME = {
@@ -229,7 +230,8 @@ function adjustCredit(user, delta, reason) {
 }
 
 /* คืนเงิน/คืนมัดจำ/จ่ายค่าเช่า เมื่อการจองถูกยกเลิกหรือคืนของ (ทำครั้งเดียวต่อ hold) */
-function settleBooking(booking, next, actor) {
+function settleBooking(booking, next, actor, options) {
+  const opts = options || {};
   const hold = store().holds.find(function (entry) {
     return entry.bookingCode === booking.code && entry.status === 'held';
   });
@@ -241,12 +243,20 @@ function settleBooking(booking, next, actor) {
 
   if (next === 'cancelled') {
     const refund = hold.rent + hold.deposit;
+    const note = opts.rejectedByOwner
+      ? 'ผู้ให้เช่าปฏิเสธการจอง — คืนเงินทั้งจำนวน · '
+      : 'คืนเงินทั้งจำนวน · ';
     renter.wallet = walletOf(renter) + refund;
-    pushLedger(renter, { type: 'refund', amount: refund, note: 'คืนเงินทั้งจำนวน · ' + booking.code, ref: booking.code });
+    pushLedger(renter, { type: 'refund', amount: refund, note: note + booking.code, ref: booking.code });
     hold.status = 'refunded';
     hold.closedAt = new Date().toISOString();
-    adjustCredit(renter, -4, 'ยกเลิกการจอง ' + booking.code);
-    logEvent('wallet.refund', 'คืน ' + refund + ' FLO ให้ ' + renter.name + ' (' + booking.code + ')', actor, booking.code);
+    if (opts.penalizeRenter === false) {
+      /* ผู้ให้เช่าเป็นฝ่ายปฏิเสธ: ผู้เช่าไม่ได้ทำผิด จึงไม่ตัดเครดิต */
+      logEvent('wallet.refund', 'คืน ' + refund + ' FLO ให้ ' + renter.name + ' (' + booking.code + ') หลังผู้ให้เช่าปฏิเสธ', actor, booking.code);
+    } else {
+      adjustCredit(renter, -4, 'ยกเลิกการจอง ' + booking.code);
+      logEvent('wallet.refund', 'คืน ' + refund + ' FLO ให้ ' + renter.name + ' (' + booking.code + ')', actor, booking.code);
+    }
     return 'refund';
   }
 
@@ -278,7 +288,34 @@ function publicUser(user) {
   };
 }
 
-function publicItem(item) {
+/* วันที่ถูกจองไปแล้ว (รอยืนยัน/กำลังเช่า) — เอาไปแสดงในปฏิทินว่าช่วงนั้นไม่ว่าง */
+function bookedDays(itemId) {
+  const days = [];
+  store().bookings.forEach(function (booking) {
+    if (booking.itemId !== itemId) return;
+    if (booking.status !== 'pending' && booking.status !== 'active') return;
+    const stop = String(booking.end || '');
+    let cursor = String(booking.start || '');
+    for (let guard = 0; guard < 400 && cursor && stop && cursor < stop; guard += 1) {
+      days.push(cursor);
+      const date = new Date(cursor + 'T00:00:00Z');
+      if (isNaN(date.getTime())) break;
+      date.setUTCDate(date.getUTCDate() + 1);
+      cursor = date.toISOString().slice(0, 10);
+    }
+  });
+  return days;
+}
+
+/* วันไม่ว่างของสินค้า = วันที่เจ้าของกันไว้ + วันที่มีการจองอยู่ */
+function unavailableDays(item) {
+  const set = new Set(item.unavailable || []);
+  bookedDays(item.id).forEach(function (day) { set.add(day); });
+  return Array.from(set).sort();
+}
+
+function publicItem(item, options) {
+  const opts = options || {};
   return {
     id: item.id, cat: item.cat, title: item.title, emoji: item.emoji,
     images: Array.isArray(item.images) && item.images.length ? item.images : (seed.ITEM_IMAGES[item.id] || []),
@@ -286,7 +323,7 @@ function publicItem(item) {
     rating: item.rating, reviews: item.reviews, location: item.location,
     tags: item.tags || [], desc: item.desc, terms: item.terms,
     availableFrom: item.availableFrom || null,
-    unavailable: item.unavailable || [],
+    unavailable: opts.withBookings ? unavailableDays(item) : (item.unavailable || []),
     lat: typeof item.lat === 'number' ? item.lat : null,
     lng: typeof item.lng === 'number' ? item.lng : null,
     status: item.status, createdAt: item.createdAt
@@ -773,7 +810,7 @@ async function handleApi(req, res, url) {
 
     if (key === 'GET /api/items/' + id) {
       if (item.status !== 'published' && !isOwner && !isAdmin) fail(404, 'ไม่พบสินค้าชิ้นนี้');
-      return sendJson(res, 200, { item: publicItem(item) });
+      return sendJson(res, 200, { item: publicItem(item, { withBookings: true }) });
     }
 
     if (method === 'PATCH') {
@@ -832,6 +869,14 @@ async function handleApi(req, res, url) {
     const days = Math.round((end - start) / DAY);
     if (days < 1) fail(400, 'วันที่คืนต้องอยู่หลังวันที่เริ่มเช่า');
     if (days > 90) fail(400, 'จองได้ครั้งละไม่เกิน 90 วัน');
+
+    /* กันจองทับช่วงที่มีคนจองอยู่แล้ว (รอยืนยันหรือกำลังเช่า) */
+    const clash = store().bookings.some(function (entry) {
+      if (entry.itemId !== item.id) return false;
+      if (entry.status !== 'pending' && entry.status !== 'active') return false;
+      return start < new Date(String(entry.end) + 'T00:00:00Z') && end > new Date(String(entry.start) + 'T00:00:00Z');
+    });
+    if (clash) fail(409, 'ช่วงวันที่เลือกถูกจองไปแล้ว — เลือกวันอื่นที่ว่าง');
 
     const total = item.price * days + item.deposit;
 
@@ -907,8 +952,8 @@ async function handleApi(req, res, url) {
       booking.status = 'cancelled';
       booking.cancelledAt = new Date().toISOString();
     } else {
-      if (booking.status !== 'active' && booking.status !== 'pending' && user.role !== 'admin') {
-        fail(409, 'คืนสินค้าได้เฉพาะการจองที่กำลังใช้งาน');
+      if (booking.status !== 'active' && user.role !== 'admin') {
+        fail(409, 'คืนสินค้าได้เฉพาะการจองที่ผู้ให้เช่ายืนยันแล้ว');
       }
       booking.status = 'returned';
       booking.returnedAt = new Date().toISOString();
@@ -917,6 +962,52 @@ async function handleApi(req, res, url) {
     settleBooking(booking, booking.status, user);
     db.persist();
     return sendJson(res, 200, { booking: booking, wallet: walletOf(user) });
+  }
+
+  /* ---- bookings ฝั่งผู้ให้เช่า: ดูคำขอจองของประกาศตัวเอง และยืนยัน/ปฏิเสธ ---- */
+
+  if (key === 'GET /api/owner/bookings') {
+    const user = requireUser(req);
+    const status = String(url.searchParams.get('status') || 'all');
+    let list = store().bookings.filter(function (booking) { return booking.ownerId === user.id; });
+    if (status !== 'all') list = list.filter(function (booking) { return booking.status === status; });
+    list = list.slice().sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    return sendJson(res, 200, {
+      bookings: list,
+      count: list.length,
+      pending: store().bookings.filter(function (booking) {
+        return booking.ownerId === user.id && booking.status === 'pending';
+      }).length
+    });
+  }
+
+  const ownerBookingMatch = /^\/api\/owner\/bookings\/([\w-]+)$/.exec(pathname);
+  if (ownerBookingMatch && method === 'PATCH') {
+    const user = requireUser(req);
+    const booking = store().bookings.find(function (entry) { return entry.code === ownerBookingMatch[1]; });
+    if (!booking) fail(404, 'ไม่พบการจองนี้');
+    if (booking.ownerId !== user.id && user.role !== 'admin') fail(403, 'ยืนยันได้เฉพาะการจองของประกาศตัวเอง');
+
+    const payload = await readBody(req);
+    const action = asEnum(String(payload.action || ''), 'การกระทำ', ['confirm', 'reject']);
+    if (booking.status !== 'pending') fail(409, 'จัดการได้เฉพาะการจองที่รอยืนยันอยู่');
+
+    if (action === 'confirm') {
+      booking.status = 'active';
+      booking.confirmedAt = new Date().toISOString();
+      booking.confirmedBy = user.id;
+      adjustCredit(user, 1, 'ยืนยันการจอง ' + booking.code);
+      logEvent('booking.confirm', 'ยืนยันการจอง ' + booking.code + ' ของ ' + (booking.userName || 'ผู้เช่า'), user, booking.code);
+    } else {
+      booking.status = 'cancelled';
+      booking.cancelledAt = new Date().toISOString();
+      booking.cancelledBy = 'owner';
+      settleBooking(booking, 'cancelled', user, { rejectedByOwner: true, penalizeRenter: false });
+      logEvent('booking.reject', 'ปฏิเสธการจอง ' + booking.code + ' และคืนเงินให้ ' + (booking.userName || 'ผู้เช่า'), user, booking.code);
+    }
+
+    db.persist();
+    return sendJson(res, 200, { booking: booking });
   }
 
   /* ---- look for requests ---- */
@@ -1390,7 +1481,7 @@ async function handleApi(req, res, url) {
 
   const adminBookingMatch = /^\/api\/admin\/bookings\/([\w-]+)$/.exec(pathname);
   if (adminBookingMatch && method === 'PATCH') {
-    requireAdmin(req);
+    const admin = requireAdmin(req);
     const booking = store().bookings.find(function (entry) { return entry.code === adminBookingMatch[1]; });
     if (!booking) fail(404, 'ไม่พบการจองนี้');
     const payload = await readBody(req);
@@ -1398,7 +1489,7 @@ async function handleApi(req, res, url) {
     booking.status = next;
     if (next === 'returned') booking.returnedAt = new Date().toISOString();
     if (next === 'cancelled') booking.cancelledAt = new Date().toISOString();
-    settleBooking(booking, next, user);
+    settleBooking(booking, next, admin);
     db.persist();
     return sendJson(res, 200, { booking: booking });
   }

@@ -97,7 +97,9 @@ flo-rent-web/
 | PATCH | `/api/me` | แก้ไขโปรไฟล์ |
 | GET | `/api/bookings` | การจองของฉัน |
 | POST | `/api/bookings` | จองสินค้า (`itemId`, `start`, `end`) |
-| PATCH | `/api/bookings/:code` | `{action:"cancel"}` หรือ `{action:"return"}` |
+| PATCH | `/api/bookings/:code` | `{action:"cancel"}` หรือ `{action:"return"}` (คืนได้เฉพาะการจองที่ยืนยันแล้ว) |
+| GET | `/api/owner/bookings` | คำขอจองที่เข้ามาในประกาศของฉัน |
+| PATCH | `/api/owner/bookings/:code` | เจ้าของประกาศยืนยัน/ปฏิเสธ `{action:"confirm"}` หรือ `{action:"reject"}` |
 | GET | `/api/requests` | คำขอตามหา |
 | GET | `/api/work-categories` | หมวดหมู่การจ้างงาน (Producer, Grip, Catering, …) |
 | GET | `/api/workers?cat&q` | คนทำงานที่เปิดรับจ้าง (เรตค่าจ้าง/วัน) |

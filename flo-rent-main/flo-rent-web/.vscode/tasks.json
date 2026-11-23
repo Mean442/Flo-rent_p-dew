@@ -1,0 +1,46 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "FLO-RENT: start server",
+      "detail": "รันเซิร์ฟเวอร์ที่ http://127.0.0.1:4173 (ใช้ npm.cmd จึงไม่ติด ExecutionPolicy)",
+      "type": "process",
+      "command": "npm.cmd",
+      "args": ["start"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "FLO-RENT: start server (node.exe)",
+      "detail": "รันด้วย node โดยตรง ไม่ผ่าน npm",
+      "type": "process",
+      "command": "node",
+      "args": ["server/server.js"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "FLO-RENT: start server (custom port)",
+      "type": "process",
+      "command": "node",
+      "args": ["server/server.js"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "PORT": "8080" } },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    }
+  ]
+}
