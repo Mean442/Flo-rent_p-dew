@@ -11,9 +11,12 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+require('./env');
+
 const auth = require('./auth');
 const db = require('./db');
 const seed = require('./seed');
+const mailer = require('./mailer');
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -87,7 +90,43 @@ function sendJson(res, status, payload) {
 function fail(status, message) {
   const err = new Error(message);
   err.status = status;
+  /* ข้อความที่ตั้งใจส่งให้ผู้ใช้เห็น (ไม่ใช่ stack trace ภายใน) */
+  err.expose = true;
   throw err;
+}
+
+/* ---------- โหมดเดโม + การตรวจ Origin ---------- */
+
+const DEMO_MODE = process.env.NODE_ENV !== 'production';
+const DEMO_EMAILS = ['admin@flo-rent.co', 'demo@flo-rent.co', 'owner@flo-rent.co'];
+
+function allowedOriginHosts() {
+  return String(process.env.FLO_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(function (entry) { return entry.trim().toLowerCase(); })
+    .filter(Boolean);
+}
+
+function requestHost(req) {
+  const forwarded = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  return (forwarded || String(req.headers.host || '')).toLowerCase();
+}
+
+/*
+ * คำขอที่เขียนข้อมูลต้องมาจากโดเมนของเรา — เป็นตาข่ายกัน CSRF/คำขอข้ามโดเมน
+ * ถ้าไม่มี header Origin (เช่น curl, แอปเนทีฟ) ให้ผ่านได้ เพราะการยืนยันตัวตนยังต้องใช้ token
+ * เพิ่มโดเมนอื่นได้ด้วย FLO_ALLOWED_ORIGINS=https://a.com,https://b.com
+ */
+function assertSameOrigin(req) {
+  const origin = String(req.headers.origin || '').trim();
+  if (!origin) return;
+  let parsed = null;
+  try { parsed = new URL(origin); } catch (err) { fail(403, 'Origin ไม่ถูกต้อง'); }
+  const host = parsed.host.toLowerCase();
+  const allow = [requestHost(req)].concat(allowedOriginHosts().map(function (entry) {
+    try { return new URL(entry).host.toLowerCase(); } catch (err) { return entry; }
+  }));
+  if (allow.indexOf(host) === -1) fail(403, 'ไม่อนุญาตให้เรียก API จากโดเมนนี้');
 }
 
 function asString(value, label, options) {
@@ -293,7 +332,7 @@ function bookedDays(itemId) {
   const days = [];
   store().bookings.forEach(function (booking) {
     if (booking.itemId !== itemId) return;
-    if (booking.status !== 'pending' && booking.status !== 'active') return;
+    if (booking.status !== 'pending' && booking.status !== 'active' && booking.status !== 'return_requested') return;
     const stop = String(booking.end || '');
     let cursor = String(booking.start || '');
     for (let guard = 0; guard < 400 && cursor && stop && cursor < stop; guard += 1) {
@@ -448,6 +487,112 @@ function createSession(user) {
   return token;
 }
 
+/* ---------- OTP ทางอีเมล ---------- */
+
+const OTP_TTL = 10 * 60 * 1000;
+const OTP_RESEND_MS = 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_MAX_PER_HOUR = 5;
+const SIGNUP_TOKEN_TTL = 15 * 60 * 1000;
+
+function otpStore() {
+  if (!Array.isArray(store().otps)) store().otps = [];
+  return store().otps;
+}
+
+function hashOtp(email, code) {
+  return crypto.createHash('sha256').update(email + '|' + code).digest('hex');
+}
+
+/* token ชั่วคราวที่ได้หลังยืนยันอีเมลสำหรับสมัครสมาชิก — เก็บเฉพาะ hash */
+function hashOtpToken(token) {
+  return crypto.createHash('sha256').update('signup|' + token).digest('hex');
+}
+
+/* เทียบแบบ timing-safe เพราะรหัสสั้นและคงที่ 6 หลัก */
+function otpMatches(email, code, record) {
+  const expected = Buffer.from(String(record.codeHash || ''), 'hex');
+  const actual = Buffer.from(hashOtp(email, code), 'hex');
+  if (expected.length !== actual.length || expected.length === 0) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
+/* เก็บกวาดรหัสที่หมดอายุเกิน 1 ชั่วโมงแล้ว เพื่อไม่ให้ฐานข้อมูลโตไม่มีที่สิ้นสุด */
+function pruneOtps() {
+  const list = otpStore();
+  const cutoff = Date.now() - 3600000;
+  const keep = list.filter(function (entry) { return entry && entry.expiresAt > cutoff; });
+  if (keep.length !== list.length) store().otps = keep;
+}
+
+/* activeOnly = true → เฉพาะรหัสที่ยังไม่ถูกใช้ (ใช้ตอนยืนยัน), false → รหัสล่าสุดทุกสถานะ (ใช้คิดคูลดาวน์ตอนขอใหม่) */
+function latestOtp(email, activeOnly, purpose) {
+  pruneOtps();
+  let latest = null;
+  otpStore().forEach(function (entry) {
+    if (!entry || entry.email !== email) return;
+    if ((entry.purpose || 'login') !== (purpose || 'login')) return;
+    if (activeOnly && entry.usedAt) return;
+    if (!latest || entry.createdAt > latest.createdAt) latest = entry;
+  });
+  return latest;
+}
+
+/* production ที่ยังไม่ตั้งค่าผู้ให้บริการอีเมล: ห้ามออก OTP เด็ดขาด (จะไม่มีใครได้รับรหัส) */
+function otpUnavailable() {
+  return !mailer.isConfigured() && process.env.NODE_ENV === 'production';
+}
+
+/* ออก OTP ใบใหม่ (แทนที่ใบเก่าของอีเมลนั้น) — ใช้ร่วมกันทั้งการขอรหัสทั่วไปและการล็อกอินด้วยรหัสผ่าน */
+async function issueOtp(req, email, purpose, name) {
+  const now = Date.now();
+  const previous = latestOtp(email, false, purpose);
+  if (previous && previous.createdAt > now - OTP_RESEND_MS) {
+    fail(429, 'เพิ่งส่งรหัสไปแล้ว — รอ ' + Math.ceil((previous.createdAt + OTP_RESEND_MS - now) / 1000) + ' วินาทีก่อนขอใหม่');
+  }
+  const lastHour = otpStore().filter(function (entry) {
+    return entry && entry.email === email && (entry.purpose || 'login') === purpose && entry.createdAt > now - 3600000;
+  });
+  if (lastHour.length >= OTP_MAX_PER_HOUR) fail(429, 'ขอยืนยันบ่อยเกินไปสำหรับอีเมลนี้ — กรุณาลองใหม่ภายหลัง');
+
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  /* รหัสใหม่ออกแล้วรหัสเก่าใช้ไม่ได้ทันที: มีรหัสที่ยังใช้ได้เพียงใบเดียวต่ออีเมล */
+  store().otps = otpStore().filter(function (entry) { return entry.email !== email; });
+  const record = {
+    id: auth.newId('otp'),
+    email: email,
+    purpose: purpose,
+    codeHash: hashOtp(email, code),
+    attempts: 0,
+    createdAt: now,
+    expiresAt: now + OTP_TTL,
+    ip: String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim()
+  };
+  store().otps.push(record);
+  db.persist();
+
+  let delivery;
+  try {
+    delivery = await mailer.sendOtp({
+      email: email,
+      code: code,
+      name: name,
+      ttlMinutes: Math.round(OTP_TTL / 60000)
+    });
+  } catch (err) {
+    /* ส่งอีเมลไม่สำเร็จ: ถอดรหัสที่ยังไม่ได้ส่งออก เพื่อไม่ให้คูลดาวน์ 60 วินาทีบล็อกการลองใหม่ */
+    store().otps = otpStore().filter(function (entry) { return entry.id !== record.id; });
+    db.persist();
+    throw err;
+  }
+  return {
+    delivered: delivery.delivered,
+    devCode: delivery.devCode || undefined,
+    expiresIn: Math.round(OTP_TTL / 1000),
+    resendIn: Math.round(OTP_RESEND_MS / 1000)
+  };
+}
+
 function readBody(req) {
   // บน Vercel ตัว runtime อ่านและ parse body ให้แล้ว (req.body) สตรีมจึงถูกใช้หมด — ถ้ารอ 'data'/'end' คำขอ POST จะค้างจน timeout
   if (req.body !== undefined && req.body !== null) {
@@ -488,6 +633,8 @@ function readBody(req) {
   });
 }
 
+/* เพดานคำขอต่อนาทีต่อ IP (ปรับได้ด้วย FLO_RATE_LIMIT_PER_MIN — ใช้ผ่อนเฉพาะตอนทดสอบ) */
+const RATE_LIMIT_PER_MIN = Math.max(1, Number(process.env.FLO_RATE_LIMIT_PER_MIN || 20) || 20);
 const rateBuckets = new Map();
 
 function allowAttempt(req, bucket) {
@@ -500,7 +647,7 @@ function allowAttempt(req, bucket) {
     return true;
   }
   record.count += 1;
-  return record.count <= 20;
+  return record.count <= RATE_LIMIT_PER_MIN;
 }
 
 /* รูปสินค้า: รับได้ทั้ง path ในโปรเจกต์ (img/xxx.jpg) และ data URL ที่ย่อจากหน้าเว็บแล้ว */
@@ -542,6 +689,34 @@ function sortItems(list, sort) {
   if (sort === 'rating') return list.sort(function (a, b) { return b.rating - a.rating || b.reviews - a.reviews; });
   if (sort === 'newest') return list.sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
   return list.sort(function (a, b) { return b.rating - a.rating || b.reviews - a.reviews; });
+}
+
+/* ---------- pagination ---------- */
+
+function pageParams(url, defaultLimit, maxLimit) {
+  const rawLimit = Number(url.searchParams.get('limit'));
+  const rawPage = Number(url.searchParams.get('page'));
+  const limit = Math.min(
+    Math.max(Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : defaultLimit, 1),
+    maxLimit
+  );
+  const page = Number.isFinite(rawPage) && rawPage > 0 ? Math.floor(rawPage) : 1;
+  return { page: page, limit: limit, offset: (page - 1) * limit };
+}
+
+/* ตัดหน้าให้รายการยาว + คืนข้อมูลหน้า/ยอดรวม เพื่อให้หน้าบ้านโหลดเพิ่มได้โดยไม่โหลดทั้งหมด */
+function paged(url, list, key, defaultLimit, maxLimit) {
+  const params = pageParams(url, defaultLimit, maxLimit);
+  const total = list.length;
+  const payload = {
+    page: params.page,
+    limit: params.limit,
+    total: total,
+    pages: Math.max(1, Math.ceil(total / params.limit)),
+    count: total
+  };
+  payload[key] = list.slice(params.offset, params.offset + params.limit);
+  return payload;
 }
 
 function parseDay(value, label) {
@@ -632,10 +807,17 @@ async function handleApi(req, res, url) {
   const pathname = url.pathname.replace(/\/+$/, '');
   const key = method + ' ' + pathname;
 
+  /* ทุกคำขอที่เขียนข้อมูลต้องมาจากโดเมนของเรา */
+  if (method !== 'GET' && method !== 'HEAD') assertSameOrigin(req);
+
   ensureCategories();
 
   if (key === 'GET /api/health') {
-    return sendJson(res, 200, { ok: true, name: 'FLO-RENT API', time: new Date().toISOString(), uptime: Math.round(process.uptime()) });
+    return sendJson(res, 200, {
+      ok: true, name: 'FLO-RENT API', time: new Date().toISOString(),
+      uptime: Math.round(process.uptime()), demo: DEMO_MODE,
+      mail: mailer.provider() || 'none'
+    });
   }
 
   if (key === 'GET /api/categories') {
@@ -655,6 +837,18 @@ async function handleApi(req, res, url) {
     if (password.length > 200) fail(400, 'รหัสผ่านยาวเกินไป');
     const age = asInt(payload.age, 'อายุ', { min: 15, max: 99 });
     if (findUserByEmail(email)) fail(409, 'อีเมลนี้มีบัญชีอยู่แล้ว');
+
+    /* บัญชีจะถูกสร้างก็ต่อเมื่อยืนยันรหัสจากอีเมลแล้วเท่านั้น (token ใช้ได้ครั้งเดียว 15 นาที) */
+    const signupToken = String(payload.signupToken || '').trim();
+    const signupRecord = /^[a-f0-9]{16,64}$/i.test(signupToken)
+      ? otpStore().filter(function (entry) {
+        return entry && entry.purpose === 'signup' && entry.signupTokenHash === hashOtpToken(signupToken) &&
+          entry.signupUsedAt === undefined && entry.signupExpiresAt > Date.now();
+      })[0]
+      : null;
+    if (!signupRecord || signupRecord.email !== email) {
+      fail(401, 'ต้องยืนยันอีเมลก่อนสมัครสมาชิก — กด "รับรหัส OTP ทางอีเมล" แล้วกรอกรหัส 6 หลักจากอีเมล');
+    }
 
     const user = {
       id: auth.newId('u'),
@@ -676,6 +870,8 @@ async function handleApi(req, res, url) {
     };
     store().users.push(user);
     pushLedger(user, { type: 'topup', amount: WELCOME_TOPUP, note: 'เครดิตต้อนรับสมาชิกใหม่' });
+    signupRecord.signupUsedAt = Date.now();
+    signupRecord.signupTokenHash = '';
     logEvent('user.register', 'สมาชิกใหม่: ' + user.name + ' (' + user.email + ')', user, user.id);
     db.persist();
     const token = createSession(user);
@@ -687,11 +883,126 @@ async function handleApi(req, res, url) {
     const payload = await readBody(req);
     const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
     const password = String(payload.password || '');
+
+    /* ฐานข้อมูลเก่าที่ยังมีบัญชีทดลองค้างอยู่: ปิดไม่ให้เข้าสู่ระบบบน production */
+    if (!DEMO_MODE && DEMO_EMAILS.indexOf(email) !== -1) {
+      fail(403, 'บัญชีทดลองถูกปิดบน production — เข้าสู่ระบบด้วยบัญชีแอดมินที่ตั้งผ่าน FLO_ADMIN_EMAIL');
+    }
+
     const user = findUserByEmail(email);
     if (!user || !auth.verifyPassword(password, user.passHash)) fail(401, 'อีเมลหรือรหัสผ่านไม่ถูกต้อง');
     if (user.status !== 'active') fail(403, 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อทีมงาน');
+
+    /* ผู้ดูแลระบบ: ทางเข้าเดียวที่ใช้รหัสผ่านได้โดยตรง เผื่อกรณีอีเมลยังส่งไม่ได้ */
+    if (user.role === 'admin') {
+      ensureWallet(user);
+      return sendJson(res, 200, { token: createSession(user), user: publicUser(user) });
+    }
+
+    /* ผู้ใช้ทั่วไป: รหัสผ่านถูกต้องแล้วยังไม่ได้ session — ต้องยืนยัน OTP ทางอีเมลก่อนทุกครั้ง */
+    if (otpUnavailable()) fail(503, 'ระบบส่งอีเมล OTP ยังไม่ถูกตั้งค่า — กรุณาติดต่อผู้ดูแลระบบ');
+    const issued = await issueOtp(req, email, 'login', user.name);
+    logEvent('auth.otp.request', 'ขอรหัส OTP หลังตรวจรหัสผ่าน: ' + email, user, user.id);
+    db.persist();
+    return sendJson(res, 200, {
+      ok: true,
+      otpRequired: true,
+      email: email,
+      delivered: issued.delivered,
+      expiresIn: issued.expiresIn,
+      resendIn: issued.resendIn,
+      devCode: issued.devCode
+    });
+  }
+
+  /* ขอ OTP: สร้างรหัส 6 หลัก ส่งทางอีเมล เก็บเฉพาะ hash ไว้ในฐานข้อมูล */
+  if (key === 'POST /api/auth/otp/request') {
+    if (!allowAttempt(req, 'otp-request')) fail(429, 'ขอยืนยันหลายครั้งเกินไป กรุณารอสักครู่');
+    if (otpUnavailable()) fail(503, 'ระบบส่งอีเมล OTP ยังไม่ถูกตั้งค่า — กรุณาติดต่อผู้ดูแลระบบ');
+    const payload = await readBody(req);
+    const purpose = payload.purpose === 'signup' ? 'signup' : 'login';
+    const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) fail(400, 'รูปแบบอีเมลไม่ถูกต้อง');
+
+    const user = findUserByEmail(email);
+    if (purpose === 'signup') {
+      if (user) fail(409, 'อีเมลนี้มีบัญชีอยู่แล้ว — เข้าสู่ระบบด้วยแท็บ "อีเมล OTP" ได้เลย');
+    } else {
+      if (!user) fail(404, 'ไม่พบบัญชีที่ใช้อีเมลนี้ — สมัครสมาชิกก่อนใช้การเข้าสู่ระบบด้วย OTP');
+      if (user.status !== 'active') fail(403, 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อทีมงาน');
+    }
+
+    const issued = await issueOtp(
+      req,
+      email,
+      purpose,
+      user ? user.name : String(payload.name || '').trim().slice(0, 60) || email.split('@')[0]
+    );
+    logEvent('auth.otp.request', 'ขอรหัส OTP ทางอีเมล: ' + email + (purpose === 'signup' ? ' (สมัครสมาชิก)' : ''), null, user ? user.id : null);
+    db.persist();
+    return sendJson(res, 200, {
+      ok: true,
+      email: email,
+      delivered: issued.delivered,
+      expiresIn: issued.expiresIn,
+      resendIn: issued.resendIn,
+      devCode: issued.devCode
+    });
+  }
+
+  /* ยืนยัน OTP: ใช้ได้ครั้งเดียว ผิดได้ไม่เกิน 5 ครั้ง และหมดอายุใน 10 นาที */
+  if (key === 'POST /api/auth/otp/verify') {
+    if (!allowAttempt(req, 'otp-verify')) fail(429, 'กรอกรหัสหลายครั้งเกินไป กรุณารอสักครู่');
+    const payload = await readBody(req);
+    const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
+    const purpose = payload.purpose === 'signup' ? 'signup' : 'login';
+    const code = String(payload.code === undefined || payload.code === null ? '' : payload.code).replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(code)) fail(400, 'รหัส OTP ต้องเป็นตัวเลข 6 หลัก');
+
+    const record = latestOtp(email, true, purpose);
+    if (!record) fail(401, 'รหัส OTP ไม่ถูกต้องหรือหมดอายุแล้ว — ขอรหัสใหม่');
+    if (record.expiresAt <= Date.now()) {
+      store().otps = otpStore().filter(function (entry) { return entry.id !== record.id; });
+      db.persist();
+      fail(401, 'รหัส OTP หมดอายุแล้ว — ขอรหัสใหม่');
+    }
+    if ((record.attempts || 0) >= OTP_MAX_ATTEMPTS) {
+      fail(429, 'กรอกรหัสผิดหลายครั้งเกินไป — ขอรหัสใหม่');
+    }
+    if (!otpMatches(email, code, record)) {
+      record.attempts = (record.attempts || 0) + 1;
+      db.persist();
+      fail(401, 'รหัส OTP ไม่ถูกต้อง เหลือโอกาสอีก ' + Math.max(0, OTP_MAX_ATTEMPTS - record.attempts) + ' ครั้ง');
+    }
+
+    /* สมัครสมาชิก: ยืนยันอีเมลสำเร็จ → ออก token ชั่วคราวให้หน้าเว็บเอาไปสร้างบัญชี */
+    if (purpose === 'signup') {
+      if (findUserByEmail(email)) fail(409, 'อีเมลนี้มีบัญชีอยู่แล้ว — เข้าสู่ระบบด้วย OTP ได้เลย');
+      const signupToken = auth.newToken();
+      record.usedAt = Date.now();
+      record.attempts = OTP_MAX_ATTEMPTS;
+      record.signupTokenHash = hashOtpToken(signupToken);
+      record.signupExpiresAt = Date.now() + SIGNUP_TOKEN_TTL;
+      db.persist();
+      return sendJson(res, 200, {
+        ok: true,
+        email: email,
+        signupToken: signupToken,
+        expiresIn: Math.round(SIGNUP_TOKEN_TTL / 1000)
+      });
+    }
+
+    const user = findUserByEmail(email);
+    if (!user) fail(404, 'ไม่พบบัญชีสำหรับอีเมลนี้');
+    if (user.status !== 'active') fail(403, 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อทีมงาน');
+
+    /* ทำเครื่องหมายว่าใช้แล้วทันที (ไม่ลบทิ้ง เพื่อให้คูลดาวน์ส่งซ้ำยังนับจากเวลาที่ขอ) */
+    record.usedAt = Date.now();
+    record.attempts = OTP_MAX_ATTEMPTS;
     ensureWallet(user);
     const token = createSession(user);
+    logEvent('auth.otp.login', 'เข้าสู่ระบบด้วย OTP ทางอีเมล: ' + user.email, user, user.id);
+    db.persist();
     return sendJson(res, 200, { token: token, user: publicUser(user) });
   }
 
@@ -713,7 +1024,9 @@ async function handleApi(req, res, url) {
       user: publicUser(user),
       stats: {
         bookings: bookings.length,
-        active: bookings.filter(function (b) { return b.status === 'pending' || b.status === 'active'; }).length,
+        active: bookings.filter(function (b) {
+          return b.status === 'pending' || b.status === 'active' || b.status === 'return_requested';
+        }).length,
         spent: bookings.filter(function (b) { return b.status !== 'cancelled'; })
           .reduce(function (sum, b) { return sum + Number(b.total || 0); }, 0),
         listings: listings.length
@@ -764,7 +1077,7 @@ async function handleApi(req, res, url) {
     if (q) items = items.filter(function (item) { return haystack(item).indexOf(q) !== -1; });
 
     sortItems(items, String(url.searchParams.get('sort') || 'recommended'));
-    return sendJson(res, 200, { items: items.map(publicItem), count: items.length });
+    return sendJson(res, 200, paged(url, items.map(publicItem), 'items', 24, 100));
   }
 
   if (key === 'POST /api/items') {
@@ -852,7 +1165,7 @@ async function handleApi(req, res, url) {
     const list = store().bookings
       .filter(function (booking) { return booking.userId === user.id; })
       .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
-    return sendJson(res, 200, { bookings: list });
+    return sendJson(res, 200, paged(url, list, 'bookings', 100, 200));
   }
 
   if (key === 'POST /api/bookings') {
@@ -951,15 +1264,23 @@ async function handleApi(req, res, url) {
       if (booking.status !== 'pending' && user.role !== 'admin') fail(409, 'ยกเลิกได้เฉพาะการจองที่ยังไม่เริ่มใช้งาน');
       booking.status = 'cancelled';
       booking.cancelledAt = new Date().toISOString();
-    } else {
-      if (booking.status !== 'active' && user.role !== 'admin') {
-        fail(409, 'คืนสินค้าได้เฉพาะการจองที่ผู้ให้เช่ายืนยันแล้ว');
-      }
+      settleBooking(booking, 'cancelled', user);
+    } else if (user.role === 'admin') {
+      /* แอดมินปิดงานแทนได้ (หลังไกล่เกลี่ย) — ผู้ใช้ทั่วไปต้องรอผู้ให้เช่ายืนยัน */
       booking.status = 'returned';
       booking.returnedAt = new Date().toISOString();
+      settleBooking(booking, 'returned', user);
+    } else {
+      /*
+       * คืนของ 2 ขั้น: ผู้เช่า “แจ้งคืน” แล้วผู้ให้เช่าต้อง “ยืนยันรับคืน”
+       * มัดจำยังถูกกันไว้ (hold = held) จนกว่าเจ้าของจะยืนยันหรือแอดมินตัดสิน
+       */
+      if (booking.status !== 'active') fail(409, 'แจ้งคืนได้เฉพาะการจองที่กำลังเช่าอยู่');
+      booking.status = 'return_requested';
+      booking.returnRequestedAt = new Date().toISOString();
+      logEvent('booking.return-requested', 'ผู้เช่าแจ้งคืน ' + booking.code + ' — รอผู้ให้เช่ายืนยันรับคืน', user, booking.code);
     }
 
-    settleBooking(booking, booking.status, user);
     db.persist();
     return sendJson(res, 200, { booking: booking, wallet: walletOf(user) });
   }
@@ -972,13 +1293,14 @@ async function handleApi(req, res, url) {
     let list = store().bookings.filter(function (booking) { return booking.ownerId === user.id; });
     if (status !== 'all') list = list.filter(function (booking) { return booking.status === status; });
     list = list.slice().sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
-    return sendJson(res, 200, {
-      bookings: list,
-      count: list.length,
+    return sendJson(res, 200, Object.assign(paged(url, list, 'bookings', 100, 200), {
       pending: store().bookings.filter(function (booking) {
         return booking.ownerId === user.id && booking.status === 'pending';
+      }).length,
+      returnRequests: store().bookings.filter(function (booking) {
+        return booking.ownerId === user.id && booking.status === 'return_requested';
       }).length
-    });
+    }));
   }
 
   const ownerBookingMatch = /^\/api\/owner\/bookings\/([\w-]+)$/.exec(pathname);
@@ -989,7 +1311,32 @@ async function handleApi(req, res, url) {
     if (booking.ownerId !== user.id && user.role !== 'admin') fail(403, 'ยืนยันได้เฉพาะการจองของประกาศตัวเอง');
 
     const payload = await readBody(req);
-    const action = asEnum(String(payload.action || ''), 'การกระทำ', ['confirm', 'reject']);
+    const action = asEnum(String(payload.action || ''), 'การกระทำ', ['confirm', 'reject', 'receive', 'dispute']);
+
+    /* ขั้นที่ 2 ของการคืนของ: ผู้ให้เช่ายืนยันรับคืน หรือแจ้งปัญหา */
+    if (action === 'receive' || action === 'dispute') {
+      if (booking.status !== 'return_requested') {
+        fail(409, 'ยืนยันรับคืนได้เฉพาะการจองที่ผู้เช่าแจ้งคืนแล้ว');
+      }
+
+      if (action === 'receive') {
+        booking.status = 'returned';
+        booking.returnedAt = new Date().toISOString();
+        booking.receivedBy = user.id;
+        settleBooking(booking, 'returned', user);
+        logEvent('booking.received', 'ผู้ให้เช่ายืนยันรับคืน ' + booking.code + ' — คืนมัดจำและจ่ายค่าเช่าแล้ว', user, booking.code);
+      } else {
+        const note = asString(payload.note, 'เหตุผลที่ยังรับคืนไม่ได้', { min: 2, max: 300 });
+        booking.status = 'active';
+        booking.disputedAt = new Date().toISOString();
+        booking.disputeNote = note;
+        logEvent('booking.dispute', 'ผู้ให้เช่าโต้แย้งการคืน ' + booking.code + ': ' + note, user, booking.code);
+      }
+
+      db.persist();
+      return sendJson(res, 200, { booking: booking });
+    }
+
     if (booking.status !== 'pending') fail(409, 'จัดการได้เฉพาะการจองที่รอยืนยันอยู่');
 
     if (action === 'confirm') {
@@ -1017,7 +1364,7 @@ async function handleApi(req, res, url) {
     const list = store().requests.slice().sort(function (a, b) {
       return String(b.createdAt).localeCompare(String(a.createdAt));
     }).map(function (request) { return publicRequest(request, viewer); });
-    return sendJson(res, 200, { requests: list });
+    return sendJson(res, 200, paged(url, list, 'requests', 50, 100));
   }
 
   if (key === 'POST /api/requests') {
@@ -1272,7 +1619,7 @@ async function handleApi(req, res, url) {
 
   if (key === 'GET /api/admin/logs') {
     requireAdmin(req);
-    return sendJson(res, 200, { logs: store().logs.slice(0, 200) });
+    return sendJson(res, 200, paged(url, store().logs, 'logs', 200, 500));
   }
 
   /* ---- admin: หมวดหมู่ (สินค้า / การจ้างงาน) ---- */
@@ -1375,7 +1722,7 @@ async function handleApi(req, res, url) {
     const users = store().users;
     const items = store().items;
     const bookings = store().bookings;
-    const statuses = ['pending', 'active', 'returned', 'cancelled'];
+    const statuses = ['pending', 'active', 'return_requested', 'returned', 'cancelled'];
     const byStatus = {};
     statuses.forEach(function (status) {
       byStatus[status] = bookings.filter(function (booking) { return booking.status === status; }).length;
@@ -1417,7 +1764,7 @@ async function handleApi(req, res, url) {
     });
     if (q) users = users.filter(function (user) { return (user.name + ' ' + user.email).toLowerCase().indexOf(q) !== -1; });
     users.sort(function (a, b) { return String(b.joinedAt).localeCompare(String(a.joinedAt)); });
-    return sendJson(res, 200, { users: users, count: users.length });
+    return sendJson(res, 200, paged(url, users, 'users', 100, 500));
   }
 
   const adminUserMatch = /^\/api\/admin\/users\/([\w-]+)$/.exec(pathname);
@@ -1448,7 +1795,7 @@ async function handleApi(req, res, url) {
       });
     }
     items.sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
-    return sendJson(res, 200, { items: items.map(publicItem), count: items.length });
+    return sendJson(res, 200, paged(url, items.map(publicItem), 'items', 100, 500));
   }
 
   const adminItemMatch = /^\/api\/admin\/items\/([\w-]+)$/.exec(pathname);
@@ -1476,7 +1823,7 @@ async function handleApi(req, res, url) {
     let bookings = store().bookings.slice();
     if (status !== 'all') bookings = bookings.filter(function (booking) { return booking.status === status; });
     bookings.sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
-    return sendJson(res, 200, { bookings: bookings, count: bookings.length });
+    return sendJson(res, 200, paged(url, bookings, 'bookings', 100, 500));
   }
 
   const adminBookingMatch = /^\/api\/admin\/bookings\/([\w-]+)$/.exec(pathname);
@@ -1485,7 +1832,7 @@ async function handleApi(req, res, url) {
     const booking = store().bookings.find(function (entry) { return entry.code === adminBookingMatch[1]; });
     if (!booking) fail(404, 'ไม่พบการจองนี้');
     const payload = await readBody(req);
-    const next = asEnum(String(payload.status || ''), 'สถานะการจอง', ['pending', 'active', 'returned', 'cancelled']);
+    const next = asEnum(String(payload.status || ''), 'สถานะการจอง', ['pending', 'active', 'return_requested', 'returned', 'cancelled']);
     booking.status = next;
     if (next === 'returned') booking.returnedAt = new Date().toISOString();
     if (next === 'cancelled') booking.cancelledAt = new Date().toISOString();
@@ -1499,7 +1846,7 @@ async function handleApi(req, res, url) {
     const list = store().requests.slice().sort(function (a, b) {
       return String(b.createdAt).localeCompare(String(a.createdAt));
     });
-    return sendJson(res, 200, { requests: list, count: list.length });
+    return sendJson(res, 200, paged(url, list, 'requests', 100, 500));
   }
 
   const adminRequestMatch = /^\/api\/admin\/requests\/([\w-]+)$/.exec(pathname);
@@ -1532,9 +1879,9 @@ async function handle(req, res) {
 function respond(req, res) {
   return handle(req, res).catch(function (err) {
     const status = err && err.status ? err.status : 500;
-    if (status >= 500) console.error('[api]', err);
+    if (status >= 500 && !err.expose) console.error('[api]', err);
     if (res.headersSent) return res.end();
-    sendJson(res, status, { error: status >= 500 ? 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์' : err.message });
+    sendJson(res, status, { error: status >= 500 && !err.expose ? 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์' : err.message });
   });
 }
 
@@ -1549,7 +1896,19 @@ if (require.main === module) {
   server.listen(PORT, HOST, function () {
     console.log('FLO-RENT พร้อมใช้งานที่ http://' + HOST + ':' + PORT);
     console.log('ไฟล์ข้อมูล: ' + db.DB_FILE);
-    console.log('บัญชีแอดมิน: admin@flo-rent.co / admin1234');
+    if (DEMO_MODE) {
+      console.log('โหมดเดโม: มีบัญชีทดลอง demo@flo-rent.co / owner@flo-rent.co / admin@flo-rent.co (รหัสอยู่ใน README)');
+      console.log('ก่อนใช้งานจริงให้ตั้ง NODE_ENV=production และ FLO_ADMIN_EMAIL / FLO_ADMIN_PASSWORD');
+    } else {
+      console.log('โหมด production: ไม่สร้างบัญชีทดลอง — แอดมินมาจาก FLO_ADMIN_EMAIL');
+    }
+    if (mailer.isConfigured()) {
+      console.log('อีเมล OTP: ส่งผ่าน ' + mailer.provider() + ' จาก ' + mailer.fromAddress());
+    } else if (DEMO_MODE) {
+      console.log('อีเมล OTP: ยังไม่ตั้งค่า — โหมดพัฒนาจะพิมพ์รหัสลงคอนโซลนี้แทนการส่งอีเมลจริง');
+    } else {
+      console.warn('อีเมล OTP: ยังไม่ตั้งค่า — ตั้ง RESEND_API_KEY หรือ BREVO_API_KEY ก่อนใช้งานจริง');
+    }
   });
 
   const shutdown = function (signal) {

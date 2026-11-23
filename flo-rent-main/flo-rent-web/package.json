@@ -5,7 +5,8 @@
   "description": "FLO-RENT — rental marketplace (static frontend + zero-dependency Node backend)",
   "scripts": {
     "start": "node server/server.js",
-    "dev": "node server/server.js"
+    "dev": "node server/server.js",
+    "test": "node --test test/api.test.js"
   },
   "engines": {
     "node": ">=18"

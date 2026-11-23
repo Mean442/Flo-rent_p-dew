@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>เข้าสู่ระบบ · FLO-RENT</title>
-<meta name="description" content="เข้าสู่ระบบหรือสมัครสมาชิก FLO-RENT เพื่อจองสินค้า ลงประกาศ และดูประวัติการจอง">
+<meta name="description" content="เข้าสู่ระบบหรือสมัครสมาชิก FLO-RENT ด้วยการยืนยันอีเมล (OTP) เพื่อจองสินค้า ลงประกาศ และดูประวัติการจอง">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -24,26 +24,31 @@
   <main class="container">
     <div class="page-head">
       <h1>บัญชีผู้ใช้</h1>
-      <p>เข้าสู่ระบบเพื่อยืนยันการจอง ลงประกาศ และเก็บประวัติการเช่าไว้ดูย้อนหลัง · ผู้ใช้งานต้องมีอายุ 15 ปีขึ้นไป</p>
+      <p>สมัครสมาชิกและเข้าสู่ระบบด้วยการยืนยันอีเมล — เราจะส่งรหัส 6 หลักไปที่อีเมลของคุณทุกครั้ง · ผู้ใช้งานต้องมีอายุ 15 ปีขึ้นไป</p>
     </div>
 
     <div class="auth-wrap">
       <div class="auth-card">
         <div class="auth-tabs" id="auth-tabs">
-          <button class="auth-tab is-active" type="button" data-mode="login">เข้าสู่ระบบ</button>
+          <button class="auth-tab is-active" type="button" data-mode="otp">เข้าสู่ระบบด้วยอีเมล</button>
           <button class="auth-tab" type="button" data-mode="register">สมัครสมาชิก</button>
+          <button class="auth-tab" type="button" data-mode="login">รหัสผ่าน</button>
         </div>
 
-        <form id="login-form" class="form-grid" style="gap:14px">
-          <label class="field span-2"><span>อีเมล</span>
-            <input type="email" id="login-email" required placeholder="you@email.com" autocomplete="username">
+        <form id="otp-form" class="form-grid" style="gap:14px">
+          <label class="field span-2"><span>อีเมลที่สมัครไว้</span>
+            <input type="email" id="otp-email" required placeholder="you@email.com" autocomplete="email">
           </label>
-          <label class="field span-2"><span>รหัสผ่าน</span>
-            <input type="password" id="login-pass" required minlength="6" placeholder="อย่างน้อย 6 ตัวอักษร" autocomplete="current-password">
+          <p class="otp-hint span-2" id="otp-hint" role="status" hidden></p>
+          <label class="field span-2" id="otp-code-field" hidden><span>รหัส OTP 6 หลัก</span>
+            <input type="text" id="otp-code" class="otp-input" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000">
           </label>
-          <p class="form-msg" id="login-msg" role="status" style="grid-column:1/-1"></p>
-          <button class="btn btn-maroon btn-block" type="submit" style="grid-column:1/-1">เข้าสู่ระบบ</button>
-          <p class="fine-print" style="grid-column:1/-1">บัญชีทดลอง: demo@flo-rent.co / demo1234</p>
+          <p class="form-msg" id="otp-msg" role="status" style="grid-column:1/-1"></p>
+          <button class="btn btn-maroon btn-block" id="otp-submit" type="submit" style="grid-column:1/-1">ส่งรหัส OTP</button>
+          <div class="otp-actions span-2" id="otp-actions" hidden>
+            <button class="btn btn-ghost btn-sm" type="button" id="otp-back">เปลี่ยนอีเมล</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="otp-resend" disabled>ส่งรหัสใหม่</button>
+          </div>
         </form>
 
         <form id="register-form" class="form-grid" style="gap:14px" hidden>
@@ -65,8 +70,28 @@
           <label class="field"><span>เบอร์โทร (ไม่บังคับ)</span>
             <input type="text" id="reg-phone" placeholder="08x-xxx-xxxx" autocomplete="tel">
           </label>
+          <p class="otp-hint span-2" id="reg-hint" role="status" hidden></p>
+          <label class="field span-2" id="reg-code-field" hidden><span>รหัส OTP 6 หลักจากอีเมล</span>
+            <input type="text" id="reg-code" class="otp-input" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="000000">
+          </label>
           <p class="form-msg" id="reg-msg" role="status" style="grid-column:1/-1"></p>
-          <button class="btn btn-maroon btn-block" type="submit" style="grid-column:1/-1">สมัครสมาชิก</button>
+          <button class="btn btn-maroon btn-block" id="reg-submit" type="submit" style="grid-column:1/-1">รับรหัส OTP ทางอีเมล</button>
+          <div class="otp-actions span-2" id="reg-actions" hidden>
+            <button class="btn btn-ghost btn-sm" type="button" id="reg-back">แก้ไขข้อมูล</button>
+            <button class="btn btn-ghost btn-sm" type="button" id="reg-resend" disabled>ส่งรหัสใหม่</button>
+          </div>
+        </form>
+
+        <form id="login-form" class="form-grid" style="gap:14px" hidden>
+          <label class="field span-2"><span>อีเมล</span>
+            <input type="email" id="login-email" required placeholder="you@email.com" autocomplete="username">
+          </label>
+          <label class="field span-2"><span>รหัสผ่าน</span>
+            <input type="password" id="login-pass" required minlength="6" placeholder="อย่างน้อย 6 ตัวอักษร" autocomplete="current-password">
+          </label>
+          <p class="form-msg" id="login-msg" role="status" style="grid-column:1/-1"></p>
+          <button class="btn btn-maroon btn-block" type="submit" style="grid-column:1/-1">เข้าสู่ระบบด้วยรหัสผ่าน</button>
+          <p class="fine-print span-2" style="margin:0">ผู้ใช้ทั่วไป: กรอกรหัสผ่านแล้วต้องยืนยันรหัส OTP จากอีเมลอีกขั้นก่อนเข้าสู่ระบบ (บัญชีผู้ดูแลระบบเข้าสู่ระบบด้วยรหัสผ่านได้ทันที)</p>
         </form>
       </div>
 
@@ -78,8 +103,7 @@
           <li>จัดการประกาศของตัวเองได้ในหน้าเดียว</li>
           <li>ประกาศ LOOK FOR ให้คนที่มีของติดต่อกลับ</li>
         </ul>
-        <button class="btn btn-cream btn-sm" type="button" id="demo-fill">ใช้บัญชีทดลอง</button>
-        <p class="fine-print" style="margin-top:14px">รหัสผ่านถูกเก็บเป็น hash (scrypt) ฝั่งเซิร์ฟเวอร์ ไม่ได้เก็บเป็นข้อความตรง ๆ</p>
+        <p class="fine-print" style="margin-top:14px">ทุกครั้งที่สมัครหรือเข้าสู่ระบบ เราจะส่งรหัส 6 หลักไปที่อีเมลของคุณ · รหัสเก็บเป็น hash ใช้ได้ครั้งเดียวภายใน 10 นาที และบัญชีจะถูกสร้างก็ต่อเมื่อยืนยันอีเมลแล้วเท่านั้น</p>
       </aside>
     </div>
   </main>

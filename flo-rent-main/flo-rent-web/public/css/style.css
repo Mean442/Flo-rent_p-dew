@@ -742,6 +742,9 @@ p { margin: 0 0 12px; }
   cursor: pointer;
 }
 .auth-tab.is-active { background: var(--cream); color: var(--ink-3); }
+.otp-hint { font-size: 13px; line-height: 1.6; background: #f3efe4; border: 1px dashed #c9c0a8; border-radius: 12px; padding: 10px 12px; color: #4c4a42; }
+.auth-card .field .otp-input { font-size: 24px; letter-spacing: 10px; text-align: center; font-weight: 700; padding-left: 18px; }
+.otp-actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
 .auth-aside h3 { font-size: 18px; margin: 0 0 10px; text-transform: none; letter-spacing: 0; }
 .auth-aside ul { margin: 0 0 16px; padding: 0; list-style: none; display: grid; gap: 8px; font-size: 14px; color: var(--cream-dim); }
 .auth-aside li::before { content: '— '; color: var(--mint); }
@@ -967,6 +970,10 @@ table.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; m
 .confirm-text { margin: 0 0 20px; font-size: 14.5px; line-height: 1.65; color: #4a473d; }
 .confirm-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
 .confirm-actions .btn { padding: 10px 20px; font-size: 14px; }
+/* ช่องกรอกใน dialog (ใช้ถามเหตุผลตอนแจ้งปัญหาการคืนของ) */
+.confirm-dialog .field { margin-bottom: 16px; }
+.confirm-dialog .field > span { color: #6c6a60; }
+.confirm-dialog .field textarea { background: #fff; color: var(--ink-3); border-color: #d7d0bd; }
 @media (max-width: 420px) {
   .confirm-actions { display: grid; }
   .confirm-actions .btn { width: 100%; }

@@ -28,6 +28,7 @@ const EMPTY_SHAPE = {
   version: 1,
   users: [],
   sessions: [],
+  otps: [],
   items: [],
   categories: [],
   jobCategories: [],

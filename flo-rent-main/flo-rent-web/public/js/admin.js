@@ -28,6 +28,7 @@
   var STATUS = {
     pending: { label: 'รอยืนยัน', cls: 'badge-pending' },
     active: { label: 'กำลังเช่า', cls: 'badge-active' },
+    return_requested: { label: 'แจ้งคืนแล้ว', cls: 'badge-pending' },
     returned: { label: 'คืนแล้ว', cls: 'badge-returned' },
     cancelled: { label: 'ยกเลิก', cls: 'badge-cancelled' }
   };
@@ -271,7 +272,7 @@
         statCard(s.items, 'ประกาศ (' + s.published + ' เผยแพร่ · ' + s.hidden + ' ซ่อน)') +
         statCard(s.bookings, 'การจองทั้งหมด') +
         statCard(baht(s.revenue), 'ยอดรวมที่ไม่ถูกยกเลิก') +
-        statCard(s.byStatus.pending + s.byStatus.active, 'รอดำเนินการ') +
+        statCard(s.byStatus.pending + s.byStatus.active + s.byStatus.return_requested, 'รอดำเนินการ') +
         statCard(s.requests, 'คำขอตามหา') +
         statCard(flo(s.walletTotal || 0), 'ยอดเงินในกระเป๋ารวม') +
         statCard(flo(s.escrow || 0), 'เงินที่กันไว้ (' + (s.activeHolds || 0) + ' รายการ)') +
@@ -279,7 +280,8 @@
       '<div class="admin-panel">' +
         '<h2>การจองล่าสุด</h2>' +
         '<p class="item-meta">สถานะ: รอยืนยัน ' + s.byStatus.pending + ' · กำลังเช่า ' + s.byStatus.active +
-          ' · คืนแล้ว ' + s.byStatus.returned + ' · ยกเลิก ' + s.byStatus.cancelled + '</p>' +
+          ' · แจ้งคืนแล้ว ' + s.byStatus.return_requested + ' · คืนแล้ว ' + s.byStatus.returned +
+          ' · ยกเลิก ' + s.byStatus.cancelled + '</p>' +
         '<div class="table-wrap"><table class="admin-table">' +
           '<thead><tr><th>รหัส</th><th>สินค้า</th><th>ผู้เช่า</th><th>ยอดรวม</th><th>สถานะ</th><th>วันที่จอง</th></tr></thead>' +
           '<tbody>' + recent + '</tbody>' +
@@ -441,7 +443,7 @@
         '<div class="admin-toolbar">' +
           '<label class="field" style="min-width:180px"><span>กรองตามสถานะ</span>' +
             '<select data-booking-filter>' +
-              ['all', 'pending', 'active', 'returned', 'cancelled'].map(function (value) {
+              ['all', 'pending', 'active', 'return_requested', 'returned', 'cancelled'].map(function (value) {
                 var label = value === 'all' ? 'ทั้งหมด' : STATUS[value].label;
                 return '<option value="' + value + '"' + (bookingFilter === value ? ' selected' : '') + '>' + label + '</option>';
               }).join('') +
@@ -466,7 +468,7 @@
       '<td>' + baht(booking.deposit) + '</td>' +
       '<td>' + (STATUS[booking.status] ? STATUS[booking.status].label : booking.status) + '</td>' +
       '<td><select class="status-select" data-booking-status="' + esc(booking.code) + '">' +
-        ['pending', 'active', 'returned', 'cancelled'].map(function (value) {
+        ['pending', 'active', 'return_requested', 'returned', 'cancelled'].map(function (value) {
           return '<option value="' + value + '"' + (booking.status === value ? ' selected' : '') + '>' +
             STATUS[value].label + '</option>';
         }).join('') +

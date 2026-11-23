@@ -173,6 +173,57 @@
     });
   }
 
+  /* ถามข้อความสั้น ๆ ด้วย <dialog> (แทน window.prompt ที่บล็อกหน้าและคุมสไตล์ไม่ได้) */
+  function promptDialog(config) {
+    var opts = config || {};
+    return new Promise(function (resolve) {
+      var dlg = document.createElement('dialog');
+      dlg.className = 'confirm-dialog';
+      dlg.innerHTML = '' +
+        '<form method="dialog" class="confirm-box">' +
+          '<p class="eyebrow">' + esc(opts.eyebrow || 'ระบุรายละเอียด') + '</p>' +
+          '<h2 class="display display-sm" style="font-size:22px">' + esc(opts.title || '') + '</h2>' +
+          '<p class="confirm-text">' + esc(opts.message || '') + '</p>' +
+          '<label class="field"><span>' + esc(opts.label || 'รายละเอียด') + '</span>' +
+            '<textarea id="prompt-input" required minlength="2" maxlength="300" style="min-height:90px"></textarea></label>' +
+          '<div class="confirm-actions">' +
+            '<button class="btn btn-ghost" type="button" data-prompt="no">ยกเลิก</button>' +
+            '<button class="btn btn-maroon" type="submit" data-prompt="yes">' + esc(opts.confirmText || 'ยืนยัน') + '</button>' +
+          '</div>' +
+        '</form>';
+
+      var settled = false;
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        if (dlg.open) dlg.close();
+        dlg.remove();
+        resolve(value);
+      }
+
+      dlg.addEventListener('click', function (event) {
+        if (event.target === dlg) { finish(null); return; }
+        var btn = event.target.closest('[data-prompt]');
+        if (btn && btn.getAttribute('data-prompt') === 'no') finish(null);
+      });
+      dlg.addEventListener('cancel', function (event) {
+        event.preventDefault();
+        finish(null);
+      });
+      dlg.querySelector('form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        var input = dlg.querySelector('#prompt-input');
+        var value = String(input.value || '').trim();
+        if (value.length < 2) { input.focus(); return; }
+        finish(value);
+      });
+
+      document.body.appendChild(dlg);
+      dlg.showModal();
+      dlg.querySelector('#prompt-input').focus();
+    });
+  }
+
   function loginPrompt(title, message) {
     return '' +
       '<div class="empty">' +
@@ -637,7 +688,7 @@
 
     featured.innerHTML = '<p class="muted">กำลังโหลดสินค้า...</p>';
     try {
-      var data = await API.get('/items?sort=recommended');
+      var data = await API.get('/items?sort=recommended&limit=8');
       renderCards(featured, data.items.slice(0, 8));
     } catch (err) {
       featured.innerHTML = '<p class="muted">โหลดสินค้าไม่สำเร็จ</p>';
@@ -660,6 +711,16 @@
     var chipsEl = $('filter-cats');
     var form = $('filter-form');
     var seq = 0;
+    var lastPage = 1;
+
+    /* ปุ่มโหลดหน้าถัดไป (แสดงเฉพาะเมื่อยังมีข้อมูลเหลือ) */
+    var moreBtn = document.createElement('button');
+    moreBtn.type = 'button';
+    moreBtn.className = 'btn btn-outline btn-block';
+    moreBtn.textContent = 'โหลดเพิ่ม';
+    moreBtn.hidden = true;
+    moreBtn.addEventListener('click', function () { render(true); });
+    if (grid.parentNode) grid.parentNode.insertBefore(moreBtn, grid.nextSibling);
 
     var state = {
       q: param('q'),
@@ -693,31 +754,44 @@
       window.history.replaceState(null, '', url.toString());
     }
 
-    async function render() {
+    async function render(append) {
       var ticket = ++seq;
+      var page = append ? lastPage + 1 : 1;
       var query = new URLSearchParams();
       if (state.q) query.set('q', state.q);
       if (state.cat !== 'all') query.set('cat', state.cat);
       if (state.min > 0) query.set('min', String(state.min));
       if (state.max > 0) query.set('max', String(state.max));
       query.set('sort', state.sort);
+      query.set('limit', '24');
+      query.set('page', String(page));
 
       paintChips();
-      if (countEl) countEl.textContent = 'กำลังโหลด...';
-      grid.innerHTML = '<p class="muted">กำลังโหลด...</p>';
+      if (countEl) countEl.textContent = append ? 'กำลังโหลดเพิ่ม...' : 'กำลังโหลด...';
+      if (!append) grid.innerHTML = '<p class="muted">กำลังโหลด...</p>';
+      moreBtn.disabled = true;
 
       try {
         var data = await API.get('/items?' + query.toString());
         if (ticket !== seq) return;
-        renderCards(grid, data.items);
-        grid.hidden = data.items.length === 0;
-        if (emptyEl) emptyEl.hidden = data.items.length !== 0;
-        if (countEl) countEl.textContent = 'พบ ' + data.count + ' รายการ';
+        if (append) {
+          grid.insertAdjacentHTML('beforeend', data.items.map(itemCard).join(''));
+        } else {
+          renderCards(grid, data.items);
+        }
+        lastPage = Number(data.page) || page;
+        var shown = grid.querySelectorAll('.item-card').length;
+        grid.hidden = shown === 0;
+        if (emptyEl) emptyEl.hidden = shown !== 0;
+        if (countEl) countEl.textContent = 'พบ ' + data.count + ' รายการ · แสดง ' + shown;
+        moreBtn.hidden = !(Number(data.pages) > lastPage);
       } catch (err) {
         if (ticket !== seq) return;
-        grid.innerHTML = '<p class="muted">โหลดสินค้าไม่สำเร็จ</p>';
+        if (!append) grid.innerHTML = '<p class="muted">โหลดสินค้าไม่สำเร็จ</p>';
         if (countEl) countEl.textContent = 'โหลดไม่สำเร็จ';
         showError(err);
+      } finally {
+        moreBtn.disabled = false;
       }
 
       syncUrl();
@@ -1367,6 +1441,13 @@
 
     var loginForm = $('login-form');
     var registerForm = $('register-form');
+    var otpForm = $('otp-form');
+    var otpStage = 'email';
+    var otpEmail = '';
+    var otpTimer = null;
+    var regStage = 'form';
+    var regEmail = '';
+    var regTimer = null;
 
     if (sessionUser) {
       var card = tabs.parentElement;
@@ -1390,9 +1471,13 @@
         btn.classList.toggle('is-active', btn.getAttribute('data-mode') === mode);
       });
       if (loginForm) loginForm.hidden = mode !== 'login';
+      if (otpForm) otpForm.hidden = mode !== 'otp';
       if (registerForm) registerForm.hidden = mode !== 'register';
       setMsg($('login-msg'), '');
+      setMsg($('otp-msg'), '');
       setMsg($('reg-msg'), '');
+      if (mode !== 'otp') otpReset();
+      if (mode !== 'register') regReset();
     }
 
     function setMsg(el, text, ok) {
@@ -1406,16 +1491,6 @@
       if (btn) setMode(btn.getAttribute('data-mode'));
     });
 
-    var demoBtn = $('demo-fill');
-    if (demoBtn) {
-      demoBtn.addEventListener('click', function () {
-        if ($('login-email')) $('login-email').value = 'demo@flo-rent.co';
-        if ($('login-pass')) $('login-pass').value = 'demo1234';
-        setMode('login');
-        setMsg($('login-msg'), 'กรอกข้อมูลบัญชีทดลองให้แล้ว กด “เข้าสู่ระบบ” ได้เลย', true);
-      });
-    }
-
     if (loginForm) {
       loginForm.addEventListener('submit', async function (event) {
         event.preventDefault();
@@ -1428,6 +1503,14 @@
             email: $('login-email').value.trim(),
             password: $('login-pass').value
           });
+          /* ผู้ใช้ทั่วไป: ผ่านรหัสผ่านแล้วยังไม่ได้ session ต้องยืนยัน OTP ทางอีเมลก่อน */
+          if (data.otpRequired) {
+            button.disabled = false;
+            button.textContent = 'เข้าสู่ระบบด้วยรหัสผ่าน';
+            setMode('otp');
+            otpToCode(data.email, data, 'รหัสผ่านถูกต้อง — กรอกรหัส 6 หลักจากอีเมลเพื่อยืนยันตัวตน');
+            return;
+          }
           API.setToken(data.token);
           setMsg(msg, 'เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าบัญชี...', true);
           setFlash('เข้าสู่ระบบสำเร็จ');
@@ -1436,6 +1519,157 @@
           setMsg(msg, err.message);
           button.disabled = false;
           button.textContent = 'เข้าสู่ระบบ';
+        }
+      });
+    }
+
+    function otpReset() {
+      otpStage = 'email';
+      otpEmail = '';
+      if (otpTimer) { window.clearInterval(otpTimer); otpTimer = null; }
+      if (!otpForm) return;
+      $('otp-code-field').hidden = true;
+      $('otp-actions').hidden = true;
+      $('otp-hint').hidden = true;
+      $('otp-hint').textContent = '';
+      $('otp-email').readOnly = false;
+      $('otp-code').value = '';
+      $('otp-submit').textContent = 'ส่งรหัส OTP';
+      $('otp-submit').disabled = false;
+      setMsg($('otp-msg'), '');
+    }
+
+    function otpCountdown(seconds) {
+      var button = $('otp-resend');
+      var left = Math.max(0, Number(seconds) || 60);
+      if (otpTimer) window.clearInterval(otpTimer);
+      function paint() {
+        button.textContent = left > 0 ? 'ส่งรหัสใหม่ (' + left + ')' : 'ส่งรหัสใหม่';
+        button.disabled = left > 0;
+      }
+      paint();
+      otpTimer = window.setInterval(function () {
+        left -= 1;
+        paint();
+        if (left <= 0) { window.clearInterval(otpTimer); otpTimer = null; }
+      }, 1000);
+    }
+
+    function regReset() {
+      regStage = 'form';
+      regEmail = '';
+      if (regTimer) { window.clearInterval(regTimer); regTimer = null; }
+      if (!registerForm) return;
+      $('reg-code-field').hidden = true;
+      $('reg-actions').hidden = true;
+      $('reg-hint').hidden = true;
+      $('reg-hint').textContent = '';
+      $('reg-email').readOnly = false;
+      $('reg-code').value = '';
+      $('reg-submit').textContent = 'รับรหัส OTP ทางอีเมล';
+      $('reg-submit').disabled = false;
+      $('reg-resend').disabled = true;
+      $('reg-resend').textContent = 'ส่งรหัสใหม่';
+      setMsg($('reg-msg'), '');
+    }
+
+    function regCountdown(seconds) {
+      var button = $('reg-resend');
+      var left = Math.max(0, Number(seconds) || 60);
+      if (regTimer) window.clearInterval(regTimer);
+      function paint() {
+        button.textContent = left > 0 ? 'ส่งรหัสใหม่ (' + left + ')' : 'ส่งรหัสใหม่';
+        button.disabled = left > 0;
+      }
+      paint();
+      regTimer = window.setInterval(function () {
+        left -= 1;
+        paint();
+        if (left <= 0) { window.clearInterval(regTimer); regTimer = null; }
+      }, 1000);
+    }
+
+    /* แสดงช่องกรอกรหัสหลังส่ง OTP สำเร็จ (ใช้ทั้งแท็บ OTP และการล็อกอินด้วยรหัสผ่าน) */
+    function otpToCode(email, sent, lead) {
+      otpEmail = email;
+      otpStage = 'code';
+      $('otp-email').value = email;
+      $('otp-email').readOnly = true;
+      $('otp-code-field').hidden = false;
+      $('otp-actions').hidden = false;
+      $('otp-code').value = '';
+      $('otp-submit').disabled = false;
+      $('otp-submit').textContent = 'ยืนยันและเข้าสู่ระบบ';
+      $('otp-code').focus();
+      otpCountdown(sent.resendIn || 60);
+      var hint = $('otp-hint');
+      if (sent.devCode) {
+        hint.hidden = false;
+        hint.textContent = 'โหมดพัฒนา (ยังไม่ตั้งค่าผู้ให้บริการอีเมล): รหัสของคุณคือ ' + sent.devCode;
+      } else if (sent.delivered) {
+        hint.hidden = false;
+        hint.textContent = 'ส่งรหัส 6 หลักไปที่ ' + email + ' แล้ว · ใช้ได้ภายใน ' + Math.round((sent.expiresIn || 600) / 60) + ' นาที';
+      } else {
+        hint.hidden = true;
+      }
+      setMsg($('otp-msg'), lead, true);
+    }
+
+    if (otpForm) {
+      otpForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        var msg = $('otp-msg');
+        var submit = $('otp-submit');
+
+        if (otpStage === 'email') {
+          var email = $('otp-email').value.trim();
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { setMsg(msg, 'รูปแบบอีเมลไม่ถูกต้อง'); return; }
+          submit.disabled = true;
+          submit.textContent = 'กำลังส่งรหัส...';
+          try {
+            var sent = await API.post('/auth/otp/request', { email: email });
+            otpToCode(email, sent, 'ถ้าไม่เห็นอีเมล ให้ตรวจถังสแปมหรือกด "ส่งรหัสใหม่"');
+          } catch (err) {
+            setMsg(msg, err.message);
+            submit.disabled = false;
+            submit.textContent = 'ส่งรหัส OTP';
+          }
+          return;
+        }
+
+        var code = $('otp-code').value.replace(/\s+/g, '');
+        if (!/^\d{6}$/.test(code)) { setMsg(msg, 'กรอกรหัส 6 หลักจากอีเมล'); return; }
+        submit.disabled = true;
+        submit.textContent = 'กำลังยืนยัน...';
+        try {
+          var data = await API.post('/auth/otp/verify', { email: otpEmail, code: code });
+          API.setToken(data.token);
+          if (otpTimer) { window.clearInterval(otpTimer); otpTimer = null; }
+          setMsg(msg, 'ยืนยันสำเร็จ กำลังเปิดหน้าบัญชี...', true);
+          setFlash('เข้าสู่ระบบสำเร็จ');
+          goNext('profile.html');
+        } catch (err) {
+          setMsg(msg, err.message);
+          submit.disabled = false;
+          submit.textContent = 'ยืนยันและเข้าสู่ระบบ';
+        }
+      });
+
+      $('otp-back').addEventListener('click', otpReset);
+
+      $('otp-resend').addEventListener('click', async function () {
+        $('otp-resend').disabled = true;
+        try {
+          var sent = await API.post('/auth/otp/request', { email: otpEmail });
+          setMsg($('otp-msg'), 'ส่งรหัสใหม่แล้ว', true);
+          if (sent.devCode) {
+            $('otp-hint').hidden = false;
+            $('otp-hint').textContent = 'โหมดพัฒนา: รหัสของคุณคือ ' + sent.devCode;
+          }
+          otpCountdown(sent.resendIn || 60);
+        } catch (err) {
+          setMsg($('otp-msg'), err.message);
+          otpCountdown(15);
         }
       });
     }
@@ -1449,37 +1683,98 @@
         var password = $('reg-pass').value;
         var confirmPass = $('reg-pass2').value;
         var age = Number($('reg-age').value);
+        var submit = $('reg-submit');
 
-        if (name.length < 2) { setMsg(msg, 'กรุณากรอกชื่ออย่างน้อย 2 ตัวอักษร'); return; }
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { setMsg(msg, 'รูปแบบอีเมลไม่ถูกต้อง'); return; }
-        if (password.length < 6) { setMsg(msg, 'รหัสผ่านต้องอย่างน้อย 6 ตัวอักษร'); return; }
-        if (password !== confirmPass) { setMsg(msg, 'รหัสผ่านทั้งสองช่องไม่ตรงกัน'); return; }
-        if (!(age >= 15)) { setMsg(msg, 'FLO-RENT เปิดให้ผู้ใช้อายุ 15 ปีขึ้นไป'); return; }
+        /* ขั้นที่ 1: ตรวจข้อมูลในฟอร์มแล้วขอรหัสยืนยันทางอีเมล (ยังไม่สร้างบัญชี) */
+        if (regStage === 'form') {
+          if (name.length < 2) { setMsg(msg, 'กรุณากรอกชื่ออย่างน้อย 2 ตัวอักษร'); return; }
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { setMsg(msg, 'รูปแบบอีเมลไม่ถูกต้อง'); return; }
+          if (password.length < 6) { setMsg(msg, 'รหัสผ่านต้องอย่างน้อย 6 ตัวอักษร'); return; }
+          if (password !== confirmPass) { setMsg(msg, 'รหัสผ่านทั้งสองช่องไม่ตรงกัน'); return; }
+          if (!(age >= 15)) { setMsg(msg, 'FLO-RENT เปิดให้ผู้ใช้อายุ 15 ปีขึ้นไป'); return; }
 
-        var button = registerForm.querySelector('button[type="submit"]');
-        button.disabled = true;
-        button.textContent = 'กำลังสมัคร...';
+          submit.disabled = true;
+          submit.textContent = 'กำลังส่งรหัส...';
+          try {
+            var sent = await API.post('/auth/otp/request', { email: email, purpose: 'signup', name: name });
+            regStage = 'code';
+            regEmail = email;
+            $('reg-email').readOnly = true;
+            $('reg-code-field').hidden = false;
+            $('reg-actions').hidden = false;
+            $('reg-code').value = '';
+            submit.disabled = false;
+            submit.textContent = 'ยืนยันอีเมลและสมัครสมาชิก';
+            $('reg-code').focus();
+            regCountdown(sent.resendIn || 60);
+            var hint = $('reg-hint');
+            if (sent.devCode) {
+              hint.hidden = false;
+              hint.textContent = 'โหมดพัฒนา (ยังไม่ตั้งค่าผู้ให้บริการอีเมล): รหัสของคุณคือ ' + sent.devCode;
+            } else if (sent.delivered) {
+              hint.hidden = false;
+              hint.textContent = 'ส่งรหัส 6 หลักไปที่ ' + email + ' แล้ว · ใช้ได้ภายใน ' + Math.round((sent.expiresIn || 600) / 60) + ' นาที';
+            } else {
+              hint.hidden = true;
+            }
+            setMsg(msg, 'กรอกรหัสจากอีเมลเพื่อยืนยันว่าเป็นอีเมลของคุณ', true);
+          } catch (err) {
+            setMsg(msg, err.message);
+            submit.disabled = false;
+            submit.textContent = 'รับรหัส OTP ทางอีเมล';
+          }
+          return;
+        }
+
+        /* ขั้นที่ 2: ยืนยันรหัส → ได้ signupToken → สร้างบัญชีและเข้าสู่ระบบทันที */
+        var code = $('reg-code').value.replace(/\s+/g, '');
+        if (!/^\d{6}$/.test(code)) { setMsg(msg, 'กรอกรหัส 6 หลักจากอีเมล'); return; }
+        submit.disabled = true;
+        submit.textContent = 'กำลังยืนยันอีเมล...';
         try {
+          var verified = await API.post('/auth/otp/verify', { email: regEmail, code: code, purpose: 'signup' });
+          submit.textContent = 'กำลังสมัคร...';
           var data = await API.post('/auth/register', {
             name: name,
-            email: email,
+            email: regEmail,
             password: password,
             age: age,
-            phone: $('reg-phone').value.trim()
+            phone: $('reg-phone').value.trim(),
+            signupToken: verified.signupToken
           });
           API.setToken(data.token);
-          setMsg(msg, 'สมัครสมาชิกสำเร็จ กำลังเปิดหน้าบัญชี...', true);
+          setMsg(msg, 'ยืนยันอีเมลและสมัครสมาชิกสำเร็จ กำลังเปิดหน้าบัญชี...', true);
           setFlash('สมัครสมาชิกสำเร็จ — ยินดีต้อนรับ');
           goNext('profile.html');
         } catch (err) {
           setMsg(msg, err.message);
-          button.disabled = false;
-          button.textContent = 'สมัครสมาชิก';
+          submit.disabled = false;
+          submit.textContent = 'ยืนยันอีเมลและสมัครสมาชิก';
+        }
+      });
+
+      $('reg-back').addEventListener('click', regReset);
+
+      $('reg-resend').addEventListener('click', async function () {
+        $('reg-resend').disabled = true;
+        try {
+          var sent = await API.post('/auth/otp/request', {
+            email: regEmail, purpose: 'signup', name: $('reg-name').value.trim()
+          });
+          setMsg($('reg-msg'), 'ส่งรหัสใหม่แล้ว', true);
+          if (sent.devCode) {
+            $('reg-hint').hidden = false;
+            $('reg-hint').textContent = 'โหมดพัฒนา: รหัสของคุณคือ ' + sent.devCode;
+          }
+          regCountdown(sent.resendIn || 60);
+        } catch (err) {
+          setMsg($('reg-msg'), err.message);
+          regCountdown(15);
         }
       });
     }
 
-    setMode('login');
+    setMode('otp');
   }
 
   /* ---------- โปรไฟล์ ---------- */
@@ -1506,7 +1801,14 @@
           '<button class="btn-ghost" type="button" data-owner-act="reject" data-code="' + esc(booking.code) + '">ปฏิเสธ</button>' +
         '</div>';
       } else if (booking.status === 'active') {
-        actions = '<p class="fine-print" style="margin-top:8px">ยืนยันแล้ว — รอผู้เช่ามารับของและกดคืนสินค้า</p>';
+        actions = '<p class="fine-print" style="margin-top:8px">ยืนยันแล้ว — รอผู้เช่าแจ้งคืนสินค้า</p>';
+      } else if (booking.status === 'return_requested') {
+        actions = '<div class="booking-actions">' +
+          '<button class="btn-mini" type="button" data-owner-act="receive" data-code="' + esc(booking.code) + '">ยืนยันรับคืน</button>' +
+          '<button class="btn-ghost" type="button" data-owner-act="dispute" data-code="' + esc(booking.code) + '">ยังไม่ได้รับของ</button>' +
+        '</div>' +
+        '<p class="fine-print" style="margin-top:8px">ผู้เช่าแจ้งคืนแล้ว — ยืนยันเพื่อคืนมัดจำ หรือแจ้งปัญหา' +
+          (booking.disputeNote ? ' · ปัญหาที่แจ้งไว้: ' + esc(booking.disputeNote) : '') + '</p>';
       } else if (booking.status === 'returned') {
         actions = '<p class="fine-print" style="margin-top:8px">คืนของครบแล้ว · ได้รับค่าเช่า ' +
           baht(Number(booking.total || 0) - Number(booking.deposit || 0)) + '</p>';
@@ -1536,11 +1838,13 @@
 
     function incomingSection() {
       var waiting = incoming.filter(function (booking) { return booking.status === 'pending'; }).length;
+      var returning = incoming.filter(function (booking) { return booking.status === 'return_requested'; }).length;
       return '' +
         '<section style="margin-top:26px">' +
           '<div class="section-head" style="margin-bottom:16px;padding-bottom:12px">' +
             '<h2 style="font-size:22px">คำขอจองที่เข้ามา' +
-              (waiting ? ' <span class="badge badge-pending">รอยืนยัน ' + waiting + '</span>' : '') + '</h2>' +
+              (waiting ? ' <span class="badge badge-pending">รอยืนยัน ' + waiting + '</span>' : '') +
+              (returning ? ' <span class="badge badge-pending">รอรับคืน ' + returning + '</span>' : '') + '</h2>' +
             '<span class="item-meta">ยืนยันหรือปฏิเสธได้จากที่นี่</span>' +
           '</div>' +
           (incoming.length
@@ -1552,6 +1856,8 @@
     async function ownerAction(btn) {
       var action = btn.getAttribute('data-owner-act');
       var code = btn.getAttribute('data-code');
+      var payload = { action: action };
+
       if (action === 'reject') {
         var sure = await confirmDialog({
           eyebrow: 'ปฏิเสธการจอง',
@@ -1562,10 +1868,39 @@
         if (!sure) return;
       }
 
+      if (action === 'receive') {
+        var sureReceive = await confirmDialog({
+          eyebrow: 'ยืนยันรับคืน',
+          title: 'ยืนยันรับคืน ' + code + '?',
+          message: 'ระบบจะคืนมัดจำให้ผู้เช่าและโอนค่าเช่าเข้ากระเป๋าของคุณ — ตรวจสภาพสินค้าก่อนยืนยัน',
+          confirmText: 'ยืนยันรับคืน'
+        });
+        if (!sureReceive) return;
+      }
+
+      if (action === 'dispute') {
+        var note = await promptDialog({
+          eyebrow: 'ยังไม่ได้รับของ',
+          title: 'แจ้งปัญหาการคืน ' + code,
+          message: 'การจองจะกลับไปสถานะกำลังเช่า และมัดจำยังถูกกันไว้จนกว่าจะตกลงกันได้',
+          label: 'ปัญหา / เหตุผล',
+          confirmText: 'แจ้งปัญหา'
+        });
+        if (!note) return;
+        payload.note = note;
+      }
+
+      var messages = {
+        confirm: 'ยืนยันการจองแล้ว ผู้เช่าเห็นสถานะใหม่ทันที',
+        reject: 'ปฏิเสธการจองและคืนเงินผู้เช่าแล้ว',
+        receive: 'ยืนยันรับคืนแล้ว — คืนมัดจำและรับค่าเช่าเรียบร้อย',
+        dispute: 'แจ้งปัญหาแล้ว การจองกลับไปสถานะกำลังเช่า'
+      };
+
       btn.disabled = true;
       try {
-        await API.patch('/owner/bookings/' + encodeURIComponent(code), { action: action });
-        toast(action === 'confirm' ? 'ยืนยันการจองแล้ว ผู้เช่าเห็นสถานะใหม่ทันที' : 'ปฏิเสธการจองและคืนเงินผู้เช่าแล้ว', 'ok');
+        await API.patch('/owner/bookings/' + encodeURIComponent(code), payload);
+        toast(messages[action] || 'อัปเดตสถานะแล้ว', 'ok');
         await render();
       } catch (err) {
         btn.disabled = false;
@@ -1679,7 +2014,7 @@
       var me;
       var mine;
       try {
-        var results = await Promise.all([API.get('/me'), API.get('/items?mine=1')]);
+        var results = await Promise.all([API.get('/me'), API.get('/items?mine=1&limit=100')]);
         me = results[0];
         mine = results[1].items;
         myItems = mine;
@@ -1691,7 +2026,7 @@
       /* คำขอจองที่เข้ามา: ถ้าเซิร์ฟเวอร์รุ่นเก่ายังไม่มีเส้นนี้ หน้าบัญชีก็ต้องใช้งานได้ปกติ */
       incoming = [];
       try {
-        incoming = (await API.get('/owner/bookings')).bookings || [];
+        incoming = (await API.get('/owner/bookings?limit=100')).bookings || [];
       } catch (err) {
         incoming = [];
       }
@@ -1864,6 +2199,7 @@
   var BOOKING_STATUS = {
     pending: { label: 'รอยืนยัน', cls: 'badge-pending' },
     active: { label: 'กำลังเช่า', cls: 'badge-active' },
+    return_requested: { label: 'แจ้งคืนแล้ว', cls: 'badge-pending' },
     returned: { label: 'คืนแล้ว', cls: 'badge-returned' },
     cancelled: { label: 'ยกเลิก', cls: 'badge-cancelled' }
   };
@@ -1879,7 +2215,7 @@
 
     var filter = 'all';
     var bookings = [];
-    var TABS = [['all', 'ทั้งหมด'], ['pending', 'รอยืนยัน'], ['active', 'กำลังเช่า'], ['returned', 'คืนแล้ว'], ['cancelled', 'ยกเลิก']];
+    var TABS = [['all', 'ทั้งหมด'], ['pending', 'รอยืนยัน'], ['active', 'กำลังเช่า'], ['return_requested', 'แจ้งคืน'], ['returned', 'คืนแล้ว'], ['cancelled', 'ยกเลิก']];
 
     function row(booking) {
       var status = BOOKING_STATUS[booking.status] || BOOKING_STATUS.pending;
@@ -1892,8 +2228,11 @@
         '<p class="fine-print" style="margin-top:8px">รอผู้ให้เช่ายืนยัน — เงินถูกกันไว้ใน Wallet แล้ว</p>';
       } else if (booking.status === 'active') {
         actions = '<div class="booking-actions">' +
-          '<button class="btn-mini" type="button" data-act="return" data-code="' + esc(booking.code) + '">คืนสินค้าแล้ว</button>' +
-        '</div>';
+          '<button class="btn-mini" type="button" data-act="return" data-code="' + esc(booking.code) + '">แจ้งคืนสินค้า</button>' +
+        '</div>' +
+        '<p class="fine-print" style="margin-top:8px">หลังแจ้งคืน ผู้ให้เช่าต้องกดยืนยันรับคืนก่อน ระบบจึงคืนมัดจำ</p>';
+      } else if (booking.status === 'return_requested') {
+        actions = '<p class="fine-print" style="margin-top:8px">แจ้งคืนแล้ว · รอผู้ให้เช่ายืนยันรับคืน — มัดจำยังถูกกันไว้</p>';
       } else if (booking.status === 'returned') {
         actions = '<p class="fine-print" style="margin-top:8px">คืนของครบแล้ว · ได้รับมัดจำ ' +
           baht(booking.deposit) + ' คืน</p>';
@@ -1923,7 +2262,9 @@
 
     function paint() {
       var shown = bookings.filter(function (booking) { return filter === 'all' || booking.status === filter; });
-      var active = bookings.filter(function (b) { return b.status === 'active' || b.status === 'pending'; }).length;
+      var active = bookings.filter(function (b) {
+        return b.status === 'active' || b.status === 'pending' || b.status === 'return_requested';
+      }).length;
       var spent = bookings.reduce(function (sum, b) {
         return b.status === 'cancelled' ? sum : sum + Number(b.total || 0);
       }, 0);
@@ -1956,7 +2297,7 @@
     async function load() {
       root.innerHTML = '<p class="muted" style="padding:40px 0">กำลังโหลดประวัติ...</p>';
       try {
-        var data = await API.get('/bookings');
+        var data = await API.get('/bookings?limit=100');
         bookings = data.bookings;
         paint();
       } catch (err) {
@@ -1986,6 +2327,16 @@
         if (!sureCancel) return;
       }
 
+      if (action === 'return') {
+        var sureReturn = await confirmDialog({
+          eyebrow: 'แจ้งคืนสินค้า',
+          title: 'แจ้งคืนการจอง ' + code + '?',
+          message: 'ผู้ให้เช่าจะได้รับแจ้งและต้องกดยืนยันรับคืนก่อน ระบบจึงคืนมัดจำให้คุณ',
+          confirmText: 'แจ้งคืนสินค้า'
+        });
+        if (!sureReturn) return;
+      }
+
       actBtn.disabled = true;
       try {
         var result = await API.patch('/bookings/' + encodeURIComponent(code), { action: action });
@@ -1993,7 +2344,7 @@
           sessionUser.wallet = result.wallet;
           paintWalletChip();
         }
-        toast(action === 'return' ? 'คืนสินค้าแล้ว รอรับมัดจำคืน' : 'ยกเลิกการจองแล้ว', 'ok');
+        toast(action === 'return' ? 'แจ้งคืนสินค้าแล้ว — รอผู้ให้เช่ายืนยันรับคืน' : 'ยกเลิกการจองแล้ว', 'ok');
         await load();
       } catch (err) {
         actBtn.disabled = false;

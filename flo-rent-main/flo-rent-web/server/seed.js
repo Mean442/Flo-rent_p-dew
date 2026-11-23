@@ -6,6 +6,42 @@ const { hashPassword } = require('./auth');
 
 const DAY = 86400000;
 
+/*
+ * โหมดเดโม: เปิดเฉพาะเมื่อไม่ได้รันแบบ production
+ * NODE_ENV=production → ไม่สร้างบัญชีทดลองหรือข้อมูลตัวอย่างเลย
+ * บัญชีแอดมินบน production ต้องมาจาก environment เท่านั้น (ไม่มีรหัสผ่านสำรองในโค้ด)
+ */
+function isDemoMode() {
+  return process.env.NODE_ENV !== 'production';
+}
+
+function envAdmin() {
+  const email = String(process.env.FLO_ADMIN_EMAIL || '').trim().toLowerCase();
+  const password = String(process.env.FLO_ADMIN_PASSWORD || '');
+  if (!email && !password) return null;
+  if (!email || !password) {
+    throw new Error('ต้องตั้งทั้ง FLO_ADMIN_EMAIL และ FLO_ADMIN_PASSWORD');
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+    throw new Error('FLO_ADMIN_EMAIL ไม่ใช่รูปแบบอีเมล');
+  }
+  if (password.length < 10) {
+    throw new Error('FLO_ADMIN_PASSWORD ต้องยาวอย่างน้อย 10 ตัวอักษร');
+  }
+  return {
+    id: 'u-admin',
+    name: String(process.env.FLO_ADMIN_NAME || 'ผู้ดูแล FLO-RENT').slice(0, 60),
+    email: email,
+    passHash: hashPassword(password),
+    role: 'admin',
+    status: 'active',
+    phone: '—', age: 30, location: 'กรุงเทพฯ', avatar: '🛠️',
+    bio: 'ทีมงาน FLO-RENT', rating: 5, reviews: 0,
+    wallet: 0, credit: 90,
+    joinedAt: new Date().toISOString()
+  };
+}
+
 const CATEGORIES = [
   { key: 'crew', num: '01', name: 'ของใช้คนออกกอง', emoji: '🎬', sub: 'กล้อง · ขาตั้งกล้อง · อุปกรณ์แสง-เสียง' },
   { key: 'fashion', num: '02', name: 'แฟชั่น', emoji: '👗', sub: 'เสื้อผ้า · อุปกรณ์แต่งหน้า · ชุดเครื่องสำอาง' },
@@ -269,33 +305,45 @@ function seedJobs() {
 
 function build() {
   const now = Date.now();
+  const demo = isDemoMode();
+  const admin = envAdmin();
 
-  const users = [
-    {
+  const users = [];
+  if (admin) {
+    users.push(admin);
+  } else if (demo) {
+    users.push({
       id: 'u-admin', name: 'ผู้ดูแล FLO-RENT', email: 'admin@flo-rent.co',
       passHash: hashPassword('admin1234'), role: 'admin', status: 'active',
       phone: '02-000-0000', age: 30, location: 'กรุงเทพฯ', avatar: '🛠️',
       bio: 'ทีมงาน FLO-RENT ดูแลประกาศและการจอง', rating: 5, reviews: 0,
       wallet: 2000, credit: 90,
       joinedAt: iso(-200 * DAY)
-    },
-    {
-      id: 'u-demo', name: 'เดโม่ ผู้เช่ามือใหม่', email: 'demo@flo-rent.co',
-      passHash: hashPassword('demo1234'), role: 'user', status: 'active',
-      phone: '081-234-5678', age: 22, location: 'กรุงเทพฯ · อารีย์', avatar: '🐥',
-      bio: 'ชอบเช่าของใช้ครั้งเดียวจบ มากกว่าซื้อเก็บไว้', rating: 4.9, reviews: 6,
-      wallet: 2200, credit: 78,
-      joinedAt: iso(-96 * DAY)
-    },
-    {
-      id: 'u-owner', name: 'พี่กันต์ สตูดิโอกลางซอย', email: 'owner@flo-rent.co',
-      passHash: hashPassword('owner1234'), role: 'user', status: 'active',
-      phone: '089-555-1212', age: 34, location: 'กรุงเทพฯ · อารีย์', avatar: '🎬',
-      bio: 'ปล่อยกล้องและอุปกรณ์ออกกองให้คนทำงานสร้างสรรค์', rating: 4.9, reviews: 42,
-      wallet: 8000, credit: 92,
-      joinedAt: iso(-140 * DAY)
-    }
-  ];
+    });
+  } else {
+    console.warn('[seed] ไม่มีบัญชีแอดมิน: ตั้ง FLO_ADMIN_EMAIL และ FLO_ADMIN_PASSWORD ก่อนใช้งาน production');
+  }
+
+  if (demo) {
+    users.push(
+      {
+        id: 'u-demo', name: 'เดโม่ ผู้เช่ามือใหม่', email: 'demo@flo-rent.co',
+        passHash: hashPassword('demo1234'), role: 'user', status: 'active',
+        phone: '081-234-5678', age: 22, location: 'กรุงเทพฯ · อารีย์', avatar: '🐥',
+        bio: 'ชอบเช่าของใช้ครั้งเดียวจบ มากกว่าซื้อเก็บไว้', rating: 4.9, reviews: 6,
+        wallet: 2200, credit: 78,
+        joinedAt: iso(-96 * DAY)
+      },
+      {
+        id: 'u-owner', name: 'พี่กันต์ สตูดิโอกลางซอย', email: 'owner@flo-rent.co',
+        passHash: hashPassword('owner1234'), role: 'user', status: 'active',
+        phone: '089-555-1212', age: 34, location: 'กรุงเทพฯ · อารีย์', avatar: '🎬',
+        bio: 'ปล่อยกล้องและอุปกรณ์ออกกองให้คนทำงานสร้างสรรค์', rating: 4.9, reviews: 42,
+        wallet: 8000, credit: 92,
+        joinedAt: iso(-140 * DAY)
+      }
+    );
+  }
 
   const items = ITEMS.map(function (item, index) {
     return Object.assign({
@@ -395,17 +443,18 @@ function build() {
     version: 1,
     users: users,
     sessions: [],
-    items: items,
-    bookings: bookings,
-    requests: requests,
-    jobs: jobs,
-    workers: WORKERS,
+    otps: [],
+    items: demo ? items : [],
+    bookings: demo ? bookings : [],
+    requests: demo ? requests : [],
+    jobs: demo ? jobs : [],
+    workers: demo ? WORKERS : [],
     hires: [],
-    ledger: ledger,
-    holds: holds,
-    logs: logs,
-    meta: { seededAt: new Date(now).toISOString(), name: 'FLO-RENT' }
+    ledger: demo ? ledger : [],
+    holds: demo ? holds : [],
+    logs: demo ? logs : [],
+    meta: { seededAt: new Date(now).toISOString(), name: 'FLO-RENT', demo: demo }
   };
 }
 
-module.exports = { build, CATEGORIES, ITEM_IMAGES, JOB_CATEGORIES, WORKERS, seedJobs };
+module.exports = { build, isDemoMode, CATEGORIES, ITEM_IMAGES, JOB_CATEGORIES, WORKERS, seedJobs };
