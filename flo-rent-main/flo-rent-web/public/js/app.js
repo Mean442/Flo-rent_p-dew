@@ -689,6 +689,15 @@
     featured.innerHTML = '<p class="muted">กำลังโหลดสินค้า...</p>';
     try {
       var data = await API.get('/items?sort=recommended&limit=8');
+      if (!data.items.length) {
+        featured.innerHTML = '' +
+          '<div class="empty" style="grid-column:1/-1">' +
+            '<h2 class="display display-sm">ยังไม่มีประกาศให้เช่า</h2>' +
+            '<p class="muted">เป็นคนแรกที่ลงประกาศ — ของที่ไม่ได้ใช้ สร้างรายได้ได้ทุกวัน</p>' +
+            '<a class="btn btn-cream" href="post.html">ลงประกาศให้เช่า</a>' +
+          '</div>';
+        return;
+      }
       renderCards(featured, data.items.slice(0, 8));
     } catch (err) {
       featured.innerHTML = '<p class="muted">โหลดสินค้าไม่สำเร็จ</p>';

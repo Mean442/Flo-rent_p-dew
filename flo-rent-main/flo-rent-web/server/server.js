@@ -42,6 +42,27 @@ function ensureCategories() {
   if (changed) db.persist();
 }
 
+/*
+ * กันหน้าแรกว่างบน production/Vercel: อินสแตนซ์ที่ยัง warm อยู่และเคยสร้างฐานข้อมูลตอนที่
+ * ยังไม่มีแคตตาล็อก (หรือฐานข้อมูลที่ถูก seed ไว้ก่อนเปิด FLO_SEED_CATALOG) จะค้าง items: []
+ * จนกว่าจะรีสตาร์ต — ฟังก์ชันนี้เติมแคตตาล็อกคืนให้ทันทีที่พบว่ายังไม่มีประกาศเลย
+ */
+function ensureCatalog() {
+  if (DEMO_MODE) return; /* โหมดเดโมมี seed ครบอยู่แล้ว */
+  if (!seed.wantsCatalog(false)) return;
+  if (store().items.length) return;
+
+  const items = seed.catalogItems(null, null);
+  if (!items.length) return;
+  const admin = store().users.filter(function (user) { return user.role === 'admin'; })[0];
+  if (admin) {
+    items.forEach(function (item) { item.ownerId = admin.id; item.owner = admin.name; });
+  }
+  store().items = items;
+  logEvent('catalog.seed', 'เติมแคตตาล็อกตั้งต้น ' + items.length + ' รายการ (ฐานข้อมูลยังไม่มีประกาศ)', null, null);
+  db.persist();
+}
+
 function itemCategories() { return store().categories; }
 function jobCategories() { return store().jobCategories; }
 function categoryKeys() { return itemCategories().map(function (cat) { return cat.key; }); }
@@ -811,6 +832,7 @@ async function handleApi(req, res, url) {
   if (method !== 'GET' && method !== 'HEAD') assertSameOrigin(req);
 
   ensureCategories();
+  ensureCatalog();
 
   if (key === 'GET /api/health') {
     return sendJson(res, 200, {

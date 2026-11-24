@@ -303,10 +303,41 @@ function seedJobs() {
   ];
 }
 
+/*
+ * แคตตาล็อกตั้งต้น: สินค้าเป็นของบัญชีแอดมิน ลบ/แก้ไขได้จากหน้าแอดมินตามปกติ
+ * - โหมดเดโม: เปิดเสมอ
+ * - บน Vercel (ทั้ง Preview และ Production): เปิดเป็นค่าเริ่มต้น เพื่อไม่ให้หน้าแรกว่าง
+ *   ปิดได้ด้วย FLO_SEED_CATALOG=0
+ * - เซิร์ฟเวอร์ production อื่น ๆ: ปิดเป็นค่าเริ่มต้น เปิดด้วย FLO_SEED_CATALOG=1
+ */
+function wantsCatalog(demo) {
+  const raw = process.env.FLO_SEED_CATALOG;
+  if (raw !== undefined && String(raw).trim() !== '') {
+    return String(raw).trim() === '1';
+  }
+  if (demo) return true;
+  return !!process.env.VERCEL;
+}
+
+/* รายการแคตตาล็อกพร้อมเจ้าของ — ใช้ทั้งตอน seed และตอนเติมคืนให้ฐานข้อมูลที่ว่างอยู่ */
+function catalogItems(ownerId, ownerName) {
+  return ITEMS.map(function (item, index) {
+    const extra = {};
+    if (ownerId) extra.ownerId = ownerId;
+    if (ownerName) extra.owner = ownerName;
+    return Object.assign({
+      ownerId: ownerId || null,
+      status: 'published',
+      createdAt: new Date(Date.now() - (index + 1) * DAY).toISOString()
+    }, item, extra);
+  });
+}
+
 function build() {
   const now = Date.now();
   const demo = isDemoMode();
   const admin = envAdmin();
+  const catalog = wantsCatalog(demo);
 
   const users = [];
   if (admin) {
@@ -345,13 +376,10 @@ function build() {
     );
   }
 
-  const items = ITEMS.map(function (item, index) {
-    return Object.assign({
-      ownerId: 'u-owner',
-      status: 'published',
-      createdAt: iso(-(index + 1) * DAY)
-    }, item);
-  });
+  /* แคตตาล็อกบน production เป็นของแอดมิน (ไม่มีบัญชีเดโม u-owner ให้อ้างถึง) */
+  const catalogOwner = demo ? { id: 'u-owner', name: '' } : { id: admin ? admin.id : 'u-owner', name: admin ? admin.name : '' };
+
+  const items = catalogItems(catalogOwner.id, catalogOwner.name);
 
   const bookings = [
     {
@@ -444,7 +472,7 @@ function build() {
     users: users,
     sessions: [],
     otps: [],
-    items: demo ? items : [],
+    items: catalog ? items : [],
     bookings: demo ? bookings : [],
     requests: demo ? requests : [],
     jobs: demo ? jobs : [],
@@ -457,4 +485,7 @@ function build() {
   };
 }
 
-module.exports = { build, isDemoMode, CATEGORIES, ITEM_IMAGES, JOB_CATEGORIES, WORKERS, seedJobs };
+module.exports = {
+  build, isDemoMode, wantsCatalog, catalogItems,
+  CATEGORIES, ITEM_IMAGES, JOB_CATEGORIES, WORKERS, seedJobs
+};
