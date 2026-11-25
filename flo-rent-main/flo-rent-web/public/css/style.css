@@ -1058,43 +1058,8 @@ table.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; m
    ========================================================================== */
 html { -webkit-text-size-adjust: 100%; }
 
-/* ลิงก์ “ลงประกาศ” ที่อยู่ในเมนู ใช้เฉพาะจอเล็กที่ซ่อนปุ่มบนหัวเว็บ */
-.nav a.nav-post { display: none; }
-
 @media (max-width: 760px) {
-  /* ---- header: แถวบน โลโก้ + บัญชี / แถวล่าง เมนูเลื่อนแนวนอน ---- */
-  .header-inner {
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px 10px;
-    min-height: 0;
-    padding-block: 9px;
-  }
   .logo { font-size: 21px; margin-right: auto; }
-  .header-inner > .btn-maroon { padding: 9px 15px; font-size: 13px; }
-  .account-nav { margin-left: 0; gap: 8px; }
-  .nav {
-    order: 5;
-    flex: 1 0 100%;
-    width: 100%;
-    margin: 0;
-    gap: 6px;
-    overflow-x: auto;
-    padding: 2px 0 3px;
-    font-size: 13px;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-  }
-  .nav::-webkit-scrollbar { display: none; }
-  .nav a {
-    flex: none;
-    white-space: nowrap;
-    padding: 6px 12px;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-    background: rgba(34, 43, 64, 0.45);
-  }
-  .nav a.is-active { background: var(--cream); color: var(--ink-3); border-color: var(--cream); }
 
   /* ---- ฟิลด์ฟอร์ม 16px กัน Safari บน iOS ซูมเอง ---- */
   .field input, .field select, .field textarea,
@@ -1138,16 +1103,6 @@ html { -webkit-text-size-adjust: 100%; }
 }
 
 @media (max-width: 560px) {
-  /* หัวเว็บแคบ: ย้ายปุ่มลงประกาศเข้าเมนูแทนเพื่อไม่ให้ล้นบรรทัด */
-  .header-inner > .btn-maroon { display: none; }
-  .nav a.nav-post {
-    display: inline-block;
-    order: -1;
-    background: var(--maroon);
-    color: var(--cream);
-    border-color: var(--maroon-2);
-  }
-
   .section { padding: 40px 0; }
   .hero { padding: 26px 0 34px; }
   .footer-grid { grid-template-columns: 1fr; gap: 22px; }
@@ -1179,4 +1134,158 @@ html { -webkit-text-size-adjust: 100%; }
   .confirm-dialog, .edit-dialog { padding: 20px; }
   .booking-item { grid-template-columns: 1fr; }
   .booking-thumb { display: none; }
+}
+
+/* ==========================================================================
+   PHASE A — mobile shell, skeleton, sticky CTA
+   ========================================================================== */
+
+.nav-toggle { display: none; }
+.bottom-nav { display: none; }
+.sticky-cta { display: none; }
+
+/* หัวเว็บเดสก์ท็อป: ลิงก์เมนูยาวไม่ตัดขึ้นบรรทัดใหม่ (จอแคบให้เลื่อนแนวนอนแทน) */
+.logo, .header-inner > .btn-maroon { flex: none; }
+.nav { flex-wrap: nowrap; gap: 18px; font-size: 13.5px; }
+.nav a, .account-link, .account-chip, .header-inner > .btn-maroon { white-space: nowrap; }
+/* ลิงก์ "การจองของฉัน" ในเมนูบัญชีซ้ำกับเมนูหลัก — ซ่อนไว้ให้หัวเว็บบรรทัดเดียว */
+.account-nav a[href="bookings.html"] { display: none; }
+.header-inner { gap: 18px; }
+@media (max-width: 1180px) {
+  .header-inner { gap: 14px; }
+  .nav { gap: 14px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .account-nav { gap: 8px; }
+}
+
+/* ---------- เมนูพับ ---------- */
+.mobile-menu { position: fixed; inset: 0; z-index: 95; }
+.mobile-menu-backdrop { position: absolute; inset: 0; background: rgba(34, 43, 64, 0.72); }
+.mobile-menu-panel {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  background: var(--cream);
+  color: var(--ink-3);
+  border-radius: 24px 24px 0 0;
+  padding: 18px 20px calc(20px + env(safe-area-inset-bottom));
+  max-height: 86dvh;
+  overflow: auto;
+  animation: menu-up 0.2s ease;
+}
+@keyframes menu-up { from { transform: translateY(14px); opacity: 0; } to { transform: none; opacity: 1; } }
+.mobile-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.mobile-menu-close {
+  width: 38px; height: 38px; border-radius: 999px;
+  border: 1.5px solid #cfc7b3; background: transparent; color: var(--ink-3);
+  font-size: 16px; line-height: 1; cursor: pointer;
+}
+.mobile-menu-links, .mobile-menu-account { display: grid; }
+.mobile-menu-account { gap: 8px; margin-top: 14px; }
+.mobile-menu-links a,
+.mobile-menu-account a {
+  padding: 11px 2px;
+  border-bottom: 1px solid #e3dcc9;
+  font-family: var(--display); font-weight: 600; font-size: 14.5px;
+}
+.mobile-menu-links a { padding-block: 13px; font-size: 15px; }
+.mobile-menu-links a:last-child { border-bottom: 0; }
+.mobile-menu-account a.btn { border-bottom: 0; padding: 12px 20px; }
+body.is-menu-open { overflow: hidden; }
+
+/* ---------- skeleton ---------- */
+.sk {
+  display: block;
+  border-radius: 10px;
+  background-color: rgba(246, 241, 225, 0.06);
+  background-image: linear-gradient(90deg, rgba(246, 241, 225, 0.05) 25%, rgba(246, 241, 225, 0.15) 37%, rgba(246, 241, 225, 0.05) 63%);
+  background-size: 400% 100%;
+  animation: sk-shimmer 1.4s ease infinite;
+}
+.sk-card { background: rgba(246, 241, 225, 0.05); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.sk-thumb { aspect-ratio: 4 / 3; border-radius: 0; }
+.sk-body { padding: 14px 16px 18px; display: grid; gap: 8px; }
+.sk-line { height: 11px; border-radius: 999px; }
+.sk-line.w-70 { width: 70%; }
+.sk-line.w-60 { width: 60%; }
+.sk-line.w-45 { width: 45%; }
+.sk-line.w-40 { width: 40%; }
+.sk-line.w-30 { width: 30%; }
+.sk-detail { display: grid; grid-template-columns: 1.6fr 1fr; gap: 34px; padding: 36px 0 64px; }
+.sk-detail-main { display: grid; gap: 12px; align-content: start; }
+.sk-hero { aspect-ratio: 1 / 1; border-radius: 24px; }
+.sk-booking { height: 420px; border-radius: 24px; }
+@keyframes sk-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .sk { animation: none; }
+  .mobile-menu-panel { animation: none; }
+  .sticky-cta { transition: none; }
+}
+@media (max-width: 1000px) {
+  .sk-detail { grid-template-columns: 1fr; padding: 24px 0 64px; }
+  .sk-booking { display: none; }
+}
+
+@media (max-width: 760px) {
+  /* กันเนื้อหา/ฟุตเตอร์ถูกเมนูล่างทับ */
+  .page { padding-bottom: calc(72px + env(safe-area-inset-bottom)); }
+
+  /* ---- หัวเว็บ: โลโก้ + บัญชี + ปุ่มเมนู (เมนูหลักย้ายไปแท็บล่าง) ---- */
+  .header-inner { flex-wrap: nowrap; gap: 10px; padding-block: 8px; min-height: 56px; }
+  .header-inner > .btn-maroon { display: none; }
+  .nav { display: none; }
+  .account-nav { margin-left: auto; gap: 8px; }
+  .nav-toggle {
+    display: inline-flex; flex-direction: column; justify-content: center; gap: 4px;
+    width: 40px; height: 40px; padding: 0 9px;
+    border: 1px solid var(--line); border-radius: 12px;
+    background: rgba(34, 43, 64, 0.45); cursor: pointer;
+  }
+  .nav-toggle span { display: block; height: 2px; border-radius: 2px; background: var(--cream); transition: transform 0.18s ease, opacity 0.18s ease; }
+  .nav-toggle.is-open span:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+  .nav-toggle.is-open span:nth-child(2) { opacity: 0; }
+  .nav-toggle.is-open span:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+  /* ---- แท็บล่าง ---- */
+  .bottom-nav {
+    display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 70;
+    background: rgba(34, 43, 64, 0.97);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--line);
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+  }
+  .bn-item {
+    display: grid; justify-items: center; gap: 2px;
+    padding: 6px 2px 4px; border-radius: 14px;
+    font-family: var(--display); font-size: 10.5px; font-weight: 600;
+    color: var(--cream-dim);
+  }
+  .bn-icon { display: grid; place-items: center; width: 34px; height: 26px; border-radius: 10px; font-size: 17px; line-height: 1; }
+  .bn-item.is-active { color: var(--cream); }
+  .bn-item.is-active .bn-icon { background: rgba(246, 241, 225, 0.14); }
+  .bn-accent { color: var(--cream); }
+  .bn-accent .bn-icon {
+    width: 38px; background: var(--maroon); color: var(--cream);
+    border: 1px solid var(--maroon-2);
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+  }
+
+  /* ---- sticky CTA หน้าสินค้า ---- */
+  .sticky-cta {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    position: fixed; left: 10px; right: 10px; z-index: 60;
+    bottom: calc(72px + env(safe-area-inset-bottom));
+    background: var(--cream); color: var(--ink-3);
+    border-radius: 18px; padding: 10px 12px 10px 16px;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.4);
+    transition: transform 0.2s ease, opacity 0.2s ease;
+  }
+  .sticky-cta.is-off { transform: translateY(14px); opacity: 0; pointer-events: none; }
+  .sticky-price { display: grid; line-height: 1.15; min-width: 0; }
+  .sticky-price strong { font-family: var(--display); font-size: 20px; font-weight: 900; }
+  .sticky-price span { font-size: 11.5px; color: #6c6a60; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sticky-cta .btn { padding: 11px 20px; font-size: 14px; flex: none; }
+
+  /* toast อยู่เหนือแท็บล่าง ไม่ทับปุ่ม */
+  .toast-stack { bottom: calc(84px + env(safe-area-inset-bottom)); }
 }

@@ -641,6 +641,175 @@
     document.body.appendChild(overlay);
   }
 
+  /* ---------- เปลือกเว็บมือถือ: เมนูล่าง + เมนูพับ (เฟส A) ---------- */
+
+  var MOBILE_NAV = [
+    { href: 'index.html', label: 'หน้าแรก', icon: '🏠' },
+    { href: 'browse.html', label: 'ค้นหา', icon: '🔍', also: ['item.html'] },
+    { href: 'post.html', label: 'ลงประกาศ', icon: '＋', accent: true },
+    { href: 'bookings.html', label: 'การจอง', icon: '🗓️', needLogin: true },
+    { href: 'profile.html', label: 'บัญชี', icon: '👤', needLogin: true }
+  ];
+
+  function currentFile() {
+    return window.location.pathname.split('/').pop() || 'index.html';
+  }
+
+  /* การ์ดโครงร่างระหว่างรอข้อมูล — ขนาดใกล้เคียง item-card จริง */
+  function skeletonCards(count) {
+    var card = '<div class="sk-card" aria-hidden="true">' +
+      '<div class="sk sk-thumb"></div>' +
+      '<div class="sk-body">' +
+        '<span class="sk sk-line w-70"></span>' +
+        '<span class="sk sk-line w-45"></span>' +
+        '<span class="sk sk-line w-30"></span>' +
+      '</div>' +
+    '</div>';
+    return new Array(count + 1).join(card);
+  }
+
+  function detailSkeleton() {
+    return '' +
+      '<div class="sk-detail" aria-hidden="true">' +
+        '<div class="sk-detail-main">' +
+          '<div class="sk sk-hero"></div>' +
+          '<span class="sk sk-line w-70"></span>' +
+          '<span class="sk sk-line w-40"></span>' +
+          '<span class="sk sk-line"></span>' +
+          '<span class="sk sk-line"></span>' +
+          '<span class="sk sk-line w-60"></span>' +
+        '</div>' +
+        '<div class="sk sk-booking"></div>' +
+      '</div>';
+  }
+
+  function paintMobileShell() {
+    var header = document.querySelector('.site-header .header-inner');
+    if (!header) return;
+    var file = currentFile();
+
+    if (!header.querySelector('.nav-toggle')) {
+      var toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'nav-toggle';
+      toggle.setAttribute('aria-label', 'เปิดเมนูทั้งหมด');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('aria-controls', 'mobile-menu');
+      toggle.innerHTML = '<span aria-hidden="true"></span><span aria-hidden="true"></span><span aria-hidden="true"></span>';
+      header.appendChild(toggle);
+    }
+
+    if (!document.querySelector('.bottom-nav')) {
+      var bar = document.createElement('nav');
+      bar.className = 'bottom-nav';
+      bar.setAttribute('aria-label', 'เมนูหลัก');
+      bar.innerHTML = MOBILE_NAV.map(function (entry) {
+        var href = entry.href;
+        if (entry.needLogin && !sessionUser) href = 'login.html?next=' + encodeURIComponent(entry.href);
+        var active = entry.href === file || (entry.also && entry.also.indexOf(file) !== -1);
+        return '<a class="bn-item' + (entry.accent ? ' bn-accent' : '') + (active ? ' is-active' : '') + '"' +
+          ' href="' + href + '"' + (active ? ' aria-current="page"' : '') + '>' +
+          '<span class="bn-icon" aria-hidden="true">' + entry.icon + '</span>' +
+          '<span class="bn-label">' + entry.label + '</span></a>';
+      }).join('');
+      document.body.appendChild(bar);
+    }
+
+    if (document.querySelector('.mobile-menu')) return;
+
+    var menu = document.createElement('div');
+    menu.className = 'mobile-menu';
+    menu.id = 'mobile-menu';
+    menu.hidden = true;
+    menu.innerHTML = '' +
+      '<div class="mobile-menu-backdrop" data-menu-close></div>' +
+      '<div class="mobile-menu-panel" role="dialog" aria-modal="true" aria-label="เมนูทั้งหมด">' +
+        '<div class="mobile-menu-head">' +
+          '<span class="logo">FLO<span>-</span>RENT</span>' +
+          '<button type="button" class="mobile-menu-close" data-menu-close aria-label="ปิดเมนู">✕</button>' +
+        '</div>' +
+        '<nav class="mobile-menu-links" aria-label="เมนูเพิ่มเติม">' +
+          '<a href="browse.html">สินค้าทั้งหมด</a>' +
+          '<a href="look-for.html">LOOK FOR · ตามหาของ</a>' +
+          '<a href="work.html">หาคนทำงาน</a>' +
+          '<a href="jobs.html">ลงหางาน</a>' +
+          '<a href="post.html">ลงประกาศให้เช่า</a>' +
+          '<a href="index.html#how">วิธีใช้งาน</a>' +
+          '<a href="index.html#value">ทำไมต้อง FLO-RENT</a>' +
+        '</nav>' +
+        '<div class="mobile-menu-account">' +
+          (sessionUser
+            ? '<a href="profile.html">บัญชีของฉัน</a>' +
+              '<a href="bookings.html">การจองของฉัน</a>' +
+              '<a href="wallet.html">กระเป๋าเงิน ' + flo(sessionUser.wallet) + '</a>' +
+              (sessionUser.role === 'admin' ? '<a href="admin.html">หลังบ้านแอดมิน</a>' : '')
+            : '<a class="btn btn-maroon btn-block" href="login.html?next=' + encodeURIComponent(file) + '">เข้าสู่ระบบ / สมัครสมาชิก</a>') +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(menu);
+
+    var toggleBtn = header.querySelector('.nav-toggle');
+
+    function closeMenu() {
+      menu.hidden = true;
+      document.body.classList.remove('is-menu-open');
+      if (toggleBtn) {
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        toggleBtn.classList.remove('is-open');
+      }
+    }
+
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', function () {
+        var open = menu.hidden;
+        menu.hidden = !open;
+        document.body.classList.toggle('is-menu-open', open);
+        toggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        toggleBtn.classList.toggle('is-open', open);
+        if (open) {
+          var closeBtn = menu.querySelector('.mobile-menu-close');
+          if (closeBtn) closeBtn.focus();
+        }
+      });
+    }
+
+    menu.addEventListener('click', function (event) {
+      if (event.target.closest('[data-menu-close]') || event.target.closest('a')) closeMenu();
+    });
+
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !menu.hidden) closeMenu();
+    });
+  }
+
+  /* แถบราคาลอยล่างจอในหน้าสินค้า — ทำหน้าที่เลื่อนไปยังการ์ดจองเดิม */
+  function paintStickyCta(item, isMine) {
+    if (isMine || document.querySelector('.sticky-cta')) return;
+    var bar = document.createElement('div');
+    bar.className = 'sticky-cta';
+    bar.innerHTML = '' +
+      '<div class="sticky-price">' +
+        '<strong>' + baht(item.price) + '</strong>' +
+        '<span>/วัน · มัดจำ ' + baht(item.deposit) + '</span>' +
+      '</div>' +
+      '<button class="btn btn-maroon" type="button">' + (sessionUser ? 'จองเลย' : 'เข้าสู่ระบบเพื่อจอง') + '</button>';
+    document.body.appendChild(bar);
+
+    var cardEl = $('booking-card');
+    bar.querySelector('button').addEventListener('click', function () {
+      if (!cardEl) return;
+      cardEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      var submit = cardEl.querySelector('button[type="submit"]');
+      if (submit) window.setTimeout(function () { submit.focus({ preventScroll: true }); }, 450);
+    });
+
+    if (cardEl && 'IntersectionObserver' in window) {
+      new window.IntersectionObserver(function (entries) {
+        bar.classList.toggle('is-off', entries[0].isIntersecting);
+      }, { rootMargin: '-8% 0px -24% 0px' }).observe(cardEl);
+    }
+  }
+
   /* ---------- ส่วนหัวเว็บ ---------- */
 
   async function initHeader() {
@@ -670,14 +839,6 @@
         headerNav.appendChild(link);
       });
 
-      /* ปุ่มลงประกาศในเมนู — ใช้แทนปุ่มบนหัวเว็บเมื่อจอเล็ก (ดู style.css) */
-      if (!headerNav.querySelector('.nav-post')) {
-        var postLink = document.createElement('a');
-        postLink.href = 'post.html';
-        postLink.className = 'nav-post';
-        postLink.textContent = 'ลงประกาศให้เช่า';
-        headerNav.appendChild(postLink);
-      }
     }
 
     if (sessionUser) {
@@ -704,6 +865,8 @@
     } else {
       box.innerHTML = '<a class="btn btn-outline btn-sm" href="login.html">เข้าสู่ระบบ</a>';
     }
+
+    paintMobileShell();
   }
 
   /* ---------- หน้าแรก ---------- */
@@ -725,7 +888,8 @@
       }).join('');
     }
 
-    featured.innerHTML = '<p class="muted">กำลังโหลดสินค้า...</p>';
+    featured.setAttribute('aria-busy', 'true');
+    featured.innerHTML = skeletonCards(8);
     try {
       var data = await API.get('/items?sort=recommended&limit=8');
       if (!data.items.length) {
@@ -738,7 +902,9 @@
         return;
       }
       renderCards(featured, data.items.slice(0, 8));
+      featured.removeAttribute('aria-busy');
     } catch (err) {
+      featured.removeAttribute('aria-busy');
       featured.innerHTML = '<p class="muted">โหลดสินค้าไม่สำเร็จ</p>';
       showError(err);
     }
@@ -816,7 +982,11 @@
 
       paintChips();
       if (countEl) countEl.textContent = append ? 'กำลังโหลดเพิ่ม...' : 'กำลังโหลด...';
-      if (!append) grid.innerHTML = '<p class="muted">กำลังโหลด...</p>';
+      if (!append) {
+        grid.hidden = false;
+        grid.setAttribute('aria-busy', 'true');
+        grid.innerHTML = skeletonCards(8);
+      }
       moreBtn.disabled = true;
 
       try {
@@ -827,6 +997,7 @@
         } else {
           renderCards(grid, data.items);
         }
+        grid.removeAttribute('aria-busy');
         lastPage = Number(data.page) || page;
         var shown = grid.querySelectorAll('.item-card').length;
         grid.hidden = shown === 0;
@@ -835,6 +1006,7 @@
         moreBtn.hidden = !(Number(data.pages) > lastPage);
       } catch (err) {
         if (ticket !== seq) return;
+        grid.removeAttribute('aria-busy');
         if (!append) grid.innerHTML = '<p class="muted">โหลดสินค้าไม่สำเร็จ</p>';
         if (countEl) countEl.textContent = 'โหลดไม่สำเร็จ';
         showError(err);
@@ -895,7 +1067,7 @@
       return;
     }
 
-    root.innerHTML = '<p class="muted" style="padding:40px 0">กำลังโหลดรายละเอียด...</p>';
+    root.innerHTML = detailSkeleton();
 
     var item;
     try {
@@ -1004,6 +1176,8 @@
       readOnly: true,
       month: item.availableFrom ? new Date(item.availableFrom + 'T00:00:00') : null
     });
+
+    paintStickyCta(item, isMine);
 
     if (isMine) return;
 
