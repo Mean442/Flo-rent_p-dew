@@ -9,9 +9,10 @@
 | --- | --- |
 | เว็บที่ deploy แล้ว (production) | https://flo-rentp-dew-flo-rent-web-1.vercel.app |
 | โปรเจกต์ Vercel | `means-projects-c35372c0/flo-rent_p-dew-flo-rent-web-1` |
+| การ deploy | อัตโนมัติเมื่อ push ขึ้น branch `main` (Git repo `Mean442/Flo-rent_p-dew`, Production Branch = `main`) |
 | ที่อยู่ใน repo (ใช้เป็น Root Directory) | `flo-rent-main/flo-rent-web` |
 | โหมด | production (`demo:false`), ผู้ให้บริการอีเมล = Brevo |
-| ที่เก็บข้อมูลบน Vercel | ยังเป็น `/tmp` ของแต่ละอินสแตนซ์ (ยังไม่ได้ต่อ Upstash Redis) |
+| ที่เก็บข้อมูลบน Vercel | Upstash Redis — Production ใช้ key `florent:db`, Preview ใช้ `florent:preview:db` (ข้อมูลแยกกัน) |
 | บัญชีแอดมิน | มาจาก `FLO_ADMIN_EMAIL` / `FLO_ADMIN_PASSWORD` ที่ตั้งใน Vercel |
 
 > หมายเหตุ: โดเมนจริงสะกด **`flo-rentp-dew-...`** (ไม่มีขีดล่าง) — ถ้าพิมพ์เป็น `flo-rent_p-dew-...` Vercel จะตอบ `404 DEPLOYMENT_NOT_FOUND`
@@ -92,7 +93,7 @@ npm start
 | `FLO_SEED_CATALOG` | แคตตาล็อกตั้งต้น 16 รายการ (เป็นของบัญชีแอดมิน) — **บน Vercel เปิดอัตโนมัติ** ทั้ง Preview และ Production, `=0` เพื่อปิด; บนเซิร์ฟเวอร์ production อื่นปิดไว้ ตั้ง `=1` เพื่อเปิด |
 | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Upstash/KV REST — เปิดโหมดเก็บข้อมูลบน Redis (ตั้งโดย Vercel Storage) |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | ทางเลือกแทนสองตัวข้างบน |
-| `FLO_DB_KEY` | ชื่อ key ใน Redis (ค่าเริ่มต้น `florent:db`) |
+| `FLO_DB_KEY` | ชื่อ key ใน Redis (ค่าเริ่มต้น `florent:db`) — ตั้ง `florent:preview:db` เฉพาะ environment **Preview** เพื่อแยกข้อมูลทดสอบออกจาก production (Upstash free ให้ 1 database ต่อบัญชี จึงแยกด้วย key) |
 
 ### ⚠️ อีเมลแอดมินต้องไม่ใช่อีเมลทดลอง
 
@@ -169,6 +170,8 @@ Vercel รันเซิร์ฟเวอร์ที่ `listen()` ค้า�
    (repo root บน GitHub คือ `Flo-rent_p-dew` ซึ่งมีโปรเจกต์อยู่ลึกสองชั้น — ถ้าใส่แค่ `flo-rent-web` Vercel จะหา `api/index.js` ไม่เจอ)
 2. Project → **Storage → Marketplace → Upstash for Redis** (ฟรี) → Connect to Project
    ระบบจะเพิ่ม env `KV_REST_API_URL` และ `KV_REST_API_TOKEN` ให้เอง
+
+   > **แยกข้อมูล Preview ออกจาก Production:** Redis ก้อนเดียวใช้ร่วมกันได้ แต่ต้องคนละ key — เพิ่ม env `FLO_DB_KEY=florent:preview:db` แล้วเลือกเฉพาะ **Preview** (ถ้าไม่แยก การทดสอบบน Preview จะไปแก้ข้อมูลจริงของ Production)
 3. ตั้ง env อย่างน้อย 4 ตัวใน **Settings → Environment Variables** แล้วเลือกให้ครบทั้ง **Production และ Preview**:
 
    | Key | ตัวอย่างค่า |
@@ -180,6 +183,7 @@ Vercel รันเซิร์ฟเวอร์ที่ `listen()` ค้า�
 
    ไม่ต้องตั้ง `NODE_ENV` (Vercel ตั้ง `production` ให้เอง) และไม่ต้องตั้ง `PORT`/`HOST`
 4. **Redeploy** — Vercel ใช้ค่า env ตอน deploy ครั้งล่าสุดเท่านั้น: Deployments → deployment บนสุด → **⋯ → Redeploy**
+   หลังเชื่อม Git แล้ว การ push ขึ้น `main` จะ deploy production อัตโนมัติ (push branch อื่นได้ Preview deployment)
    ครั้งแรกที่มีคนเรียก API ระบบจะสร้างข้อมูลตั้งต้น (หมวดหมู่ + บัญชีแอดมิน) ให้เอง
 
 ### ทำผ่าน Vercel CLI
@@ -321,7 +325,7 @@ npm start
 
 ระบบจะสร้างข้อมูลตั้งต้นใหม่ (บัญชีทดลอง + สินค้า 16 ชิ้น + การจองตัวอย่าง) — ถ้ารันด้วย `NODE_ENV=production` จะสร้างแค่หมวดหมู่และบัญชีแอดมินจาก env
 
-บน Vercel + Redis — ลบ key `florent:db` และ `florent:db:v` ใน Upstash console แล้วเรียก API ครั้งถัดไป ระบบจะสร้างข้อมูลตั้งต้นใหม่
+บน Vercel + Redis — ลบ key `florent:db` และ `florent:db:v` (production) หรือ `florent:preview:db` และ `florent:preview:db:v` (preview) ใน Upstash console แล้วเรียก API ครั้งถัดไป ระบบจะสร้างข้อมูลตั้งต้นใหม่
 
 ## รันเทสต์
 
