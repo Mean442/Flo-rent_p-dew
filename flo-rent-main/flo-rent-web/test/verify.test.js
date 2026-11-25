@@ -250,6 +250,24 @@ test('แอดมินตรวจคิว อนุมัติได้ แ
   assert.strictEqual(approveOwner.status, 200, approveOwner.text);
 });
 
+/* ---------- 4.1 อนุมัติแล้วต้องลบรูปบัตรทันที ---------- */
+
+test('อนุมัติแล้วลบรูปบัตรทันทีและเคลียร์สถานะรูป', async function () {
+  const user = db.data().users.find(function (entry) { return entry.email === state.renter.email; });
+  assert.strictEqual(user.verify.status, 'verified');
+  assert.strictEqual(user.verify.photoExpiresAt, null, 'ต้องเคลียร์เวลาหมดอายุของรูป');
+  assert.ok(user.verify.photoRemovedAt, 'ต้องบันทึกเวลาที่ลบรูป');
+  assert.strictEqual(await verify.readPhoto(user.id), null, 'รูปต้องถูกลบออกจากที่เก็บจริง');
+
+  const token = await adminToken();
+  const photo = await api('GET', '/api/admin/verifications/' + user.id + '/photo', undefined, { token: token });
+  assert.strictEqual(photo.status, 404, 'แอดมินต้องเปิดรูปเดิมไม่ได้แล้ว');
+
+  const all = await api('GET', '/api/admin/verifications?status=all', undefined, { token: token });
+  const entry = all.body.verifications.find(function (row) { return row.userId === user.id; });
+  assert.strictEqual(entry.hasPhoto, false, 'คิวต้องไม่แสดงปุ่มดูรูปอีก');
+});
+
 /* ---------- 5. หลังอนุมัติทำธุรกรรมได้จริง ---------- */
 
 test('ยืนยันตัวตนแล้ว: ลงประกาศและจองได้จริง', async function () {
@@ -311,7 +329,13 @@ test('แอดมินไม่ต้องยืนยันตัวตน�
 
 test('แอดมินเปิดดูรูปบัตรได้ คนทั่วไปเปิดไม่ได้ และบันทึก log ทุกครั้ง', async function () {
   const token = await adminToken();
-  const user = db.data().users.find(function (entry) { return entry.email === state.renter.email; });
+  /* ใช้ผู้ใช้ใหม่ที่ยังรอตรวจ เพราะรูปของผู้ใช้ที่อนุมัติแล้วถูกลบทันที */
+  const viewer = await signup('ผู้ใช้เจ้าของรูป', uniqueEmail('vf-photo'));
+  const submitted = await api('POST', '/api/verification', {
+    idNumber: makeThaiId('520010010020'), fullName: 'ผู้ใช้ เจ้าของรูป', photo: PHOTO
+  }, { token: viewer.token });
+  assert.strictEqual(submitted.status, 201, submitted.text);
+  const user = db.data().users.find(function (entry) { return entry.email === viewer.email; });
 
   const forbidden = await api('GET', '/api/admin/verifications/' + user.id + '/photo', undefined, { token: state.renter.token });
   assert.strictEqual(forbidden.status, 403);

@@ -14,12 +14,15 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto');
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'flo-rent-test-'));
 process.env.FLO_DATA_DIR = DATA_DIR;
 process.env.NODE_ENV = 'test';
 /* ชุดทดสอบยิงคำขอ OTP หลายครั้งจาก IP เดียว (127.0.0.1) — ผ่อนเพดานเฉพาะตอนทดสอบ */
 process.env.FLO_RATE_LIMIT_PER_MIN = '1000';
+/* ต้องตั้งก่อน require เซิร์ฟเวอร์: ใช้ตรวจว่า OTP ถูก hash ด้วย HMAC + secret นี้จริง */
+process.env.FLO_OTP_SECRET = 'test-otp-secret-for-hmac';
 delete process.env.KV_REST_API_URL;
 delete process.env.UPSTASH_REDIS_REST_URL;
 
@@ -221,6 +224,33 @@ test('OTP: ขอรหัส → ยืนยัน → ได้ token แล�
   assert.strictEqual(stored.length, 1, 'เก็บเฉพาะรหัสล่าสุดต่ออีเมล');
   assert.strictEqual(stored[0].code, undefined, 'ห้ามเก็บรหัสเป็นข้อความตรง ๆ');
   assert.match(String(stored[0].codeHash), /^[a-f0-9]{64}$/, 'เก็บเฉพาะ SHA-256 hash');
+});
+
+test('OTP: เก็บรหัสเป็น HMAC-SHA256 ด้วย secret และรหัสที่ออกก่อนหน้า (SHA-256 เดิม) ยังใช้ได้', async function () {
+  const email = 'otp-hmac-' + Date.now() + '@example.com';
+  await register('ผู้ใช้ OTP HMAC', email);
+
+  const requested = await api('POST', '/api/auth/otp/request', { email: email });
+  assert.strictEqual(requested.status, 200, requested.text);
+
+  const record = db.data().otps.filter(function (entry) {
+    return entry.email === email && entry.purpose === 'login';
+  })[0];
+  assert.ok(record, 'ต้องมีรหัส OTP ของอีเมลนี้');
+
+  const legacy = crypto.createHash('sha256').update(email + '|' + requested.body.devCode).digest('hex');
+  const expected = crypto.createHmac('sha256', process.env.FLO_OTP_SECRET)
+    .update('otp|login|' + email + '|' + requested.body.devCode).digest('hex');
+
+  assert.notStrictEqual(record.codeHash, legacy, 'ต้องไม่ใช่ SHA-256 เปล่าที่ถอดรหัสได้ทันที');
+  assert.strictEqual(record.codeHash, expected, 'ต้องเป็น HMAC ด้วย FLO_OTP_SECRET');
+
+  /* รหัสที่ออกก่อน deploy (SHA-256 เดิม) ต้องยังใช้ได้จนหมดอายุ ผู้ใช้ไม่ต้องขอใหม่ */
+  record.codeHash = legacy;
+  db.persist();
+  const ok = await api('POST', '/api/auth/otp/verify', { email: email, code: requested.body.devCode });
+  assert.strictEqual(ok.status, 200, ok.text);
+  assert.ok(ok.body.token, 'รหัสแบบเดิมต้องแลก token ได้');
 });
 
 test('OTP: รหัสผิดติดกันครบ 5 ครั้งแล้วต้องขอรหัสใหม่', async function () {

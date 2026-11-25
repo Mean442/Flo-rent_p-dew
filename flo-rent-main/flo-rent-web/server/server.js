@@ -627,7 +627,20 @@ function otpStore() {
   return store().otps;
 }
 
-function hashOtp(email, code) {
+/*
+ * เก็บ OTP เป็น HMAC-SHA256 ด้วย secret (FLO_OTP_SECRET) ไม่ใช่ SHA-256 เปล่า
+ * เพื่อไม่ให้ใครที่อ่านฐานข้อมูลถอดรหัส 6 หลักได้ในพริบตา
+ */
+const OTP_SECRET = process.env.FLO_OTP_SECRET || process.env.FLO_ID_SALT || 'flo-rent-otp-dev-secret-v1';
+
+function hashOtp(email, code, purpose) {
+  return crypto.createHmac('sha256', OTP_SECRET)
+    .update('otp|' + (purpose || 'login') + '|' + String(email || '').toLowerCase() + '|' + String(code))
+    .digest('hex');
+}
+
+/* รหัสที่ออกก่อนเปลี่ยนมาใช้ HMAC (SHA-256 เปล่า) ยังใช้ได้จนหมดอายุ ไม่ต้องขอใหม่ */
+function hashOtpLegacy(email, code) {
   return crypto.createHash('sha256').update(email + '|' + code).digest('hex');
 }
 
@@ -639,9 +652,12 @@ function hashOtpToken(token) {
 /* เทียบแบบ timing-safe เพราะรหัสสั้นและคงที่ 6 หลัก */
 function otpMatches(email, code, record) {
   const expected = Buffer.from(String(record.codeHash || ''), 'hex');
-  const actual = Buffer.from(hashOtp(email, code), 'hex');
-  if (expected.length !== actual.length || expected.length === 0) return false;
-  return crypto.timingSafeEqual(expected, actual);
+  if (expected.length === 0) return false;
+  const candidates = [hashOtp(email, code, record.purpose), hashOtpLegacy(email, code)];
+  return candidates.some(function (hash) {
+    const actual = Buffer.from(hash, 'hex');
+    return actual.length === expected.length && crypto.timingSafeEqual(expected, actual);
+  });
 }
 
 /* เก็บกวาดรหัสที่หมดอายุเกิน 1 ชั่วโมงแล้ว เพื่อไม่ให้ฐานข้อมูลโตไม่มีที่สิ้นสุด */
@@ -689,7 +705,7 @@ async function issueOtp(req, email, purpose, name) {
     id: auth.newId('otp'),
     email: email,
     purpose: purpose,
-    codeHash: hashOtp(email, code),
+    codeHash: hashOtp(email, code, purpose),
     attempts: 0,
     createdAt: now,
     expiresAt: now + OTP_TTL,
@@ -2077,6 +2093,14 @@ async function handleApi(req, res, url) {
     if (action === 'approve') {
       target.verify.status = 'verified';
       target.verify.rejectReason = '';
+      /* อนุมัติแล้วไม่ต้องเก็บรูปบัตรต่อ — ลบทันทีตามหลักเก็บข้อมูลเท่าที่จำเป็น */
+      try {
+        await verify.removePhoto(target.id);
+        target.verify.photoRemovedAt = new Date().toISOString();
+        target.verify.photoExpiresAt = null;
+      } catch (err) {
+        console.error('ลบรูปบัตรหลังอนุมัติไม่สำเร็จ: ' + err.message);
+      }
       logEvent('verification.approve', 'อนุมัติการยืนยันตัวตนของ ' + target.name, admin, target.id);
     } else {
       target.verify.status = 'rejected';

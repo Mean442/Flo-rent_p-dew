@@ -96,6 +96,7 @@ npm start
 | `FLO_DB_KEY` | ชื่อ key ใน Redis (ค่าเริ่มต้น `florent:db`) — ตั้ง `florent:preview:db` เฉพาะ environment **Preview** เพื่อแยกข้อมูลทดสอบออกจาก production (Upstash free ให้ 1 database ต่อบัญชี จึงแยกด้วย key) |
 | `FLO_ID_SALT` | salt สำหรับ hash เลขบัตรประชาชน (ถ้าไม่ตั้งจะใช้ค่าเริ่มต้นของระบบ — ควรตั้งค่าสุ่มใน production) |
 | `FLO_ID_ENCRYPTION_KEY` | คีย์เข้ารหัสรูปบัตรประชาชน (AES-256-GCM) — ตั้งเป็น Secret ใน Vercel |
+| `FLO_OTP_SECRET` | secret สำหรับ HMAC ของรหัส OTP (ถ้าไม่ตั้งจะใช้ `FLO_ID_SALT` แล้วจึงค่าเริ่มต้นของระบบ) — ตั้งเป็น Secret ใน Vercel |
 | `FLO_DEMO_AUTO_VERIFY` | โหมดเดโม: ให้บัญชีที่สมัครใหม่ผ่านการยืนยันอัตโนมัติ (`=0` เพื่อปิด และทดสอบเส้นทางรออนุมัติ) — production ไม่ใช้ค่านี้ (ต้องรอแอดมินอนุมัติเสมอ) |
 
 ### ⚠️ อีเมลแอดมินต้องไม่ใช่อีเมลทดลอง
