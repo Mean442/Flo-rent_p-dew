@@ -394,3 +394,33 @@ test('โหมดเดโม: บัญชีที่สมัครใหม
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/* ---------- 10. ตรวจว่าเซิร์ฟเวอร์ที่รันอยู่รองรับการดูรูป ---------- */
+
+test('health บอกความสามารถของเซิร์ฟเวอร์ เพื่อกันการกดปุ่มที่เซิร์ฟเวอร์รุ่นเก่าไม่มี', async function () {
+  const health = await api('GET', '/api/health');
+  assert.strictEqual(health.status, 200);
+  assert.ok(Array.isArray(health.body.features), 'ต้องมีรายการ features');
+  assert.ok(health.body.features.indexOf('verification') !== -1);
+  assert.ok(health.body.features.indexOf('verification-photo') !== -1, 'ต้องประกาศว่ามีเส้นทางดูรูปบัตร');
+  assert.ok(health.body.startedAt, 'ต้องบอกเวลาที่เริ่มเซิร์ฟเวอร์');
+});
+
+/* ---------- 11. รูปถูกลบตามอายุ: ต้องได้ข้อความชัดเจน ---------- */
+
+test('รูปบัตรที่ถูกลบแล้วตอบ 404 พร้อมข้อความบอกสาเหตุ', async function () {
+  const user = await signup('ผู้ใช้ลบรูป', uniqueEmail('vf-nophoto'));
+  const idNumber = makeThaiId(String(700000000000 + Math.floor(Math.random() * 90000000000)));
+  const submitted = await api('POST', '/api/verification', {
+    idNumber: idNumber, fullName: 'ผู้ใช้ ลบรูป', photo: PHOTO
+  }, { token: user.token });
+  assert.strictEqual(submitted.status, 201, submitted.text);
+
+  const record = db.data().users.find(function (entry) { return entry.email === user.email; });
+  await verify.removePhoto(record.id);
+
+  const token = await adminToken();
+  const photo = await api('GET', '/api/admin/verifications/' + record.id + '/photo', undefined, { token: token });
+  assert.strictEqual(photo.status, 404);
+  assert.match(String(photo.body.error), /ไม่พบรูปบัตร/);
+});

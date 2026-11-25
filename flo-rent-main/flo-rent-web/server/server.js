@@ -28,6 +28,9 @@ const MAX_IMAGES = 4;
 const MAX_IMAGE_BYTES = 700 * 1024;
 const SESSION_TTL = 14 * 24 * 60 * 60 * 1000;
 const DAY = 86400000;
+const STARTED_AT = new Date().toISOString();
+/* ความสามารถของโค้ดที่รันอยู่ — หน้าแอดมินใช้ตรวจว่าเซิร์ฟเวอร์เป็นรุ่นเก่าหรือไม่ */
+const SERVER_FEATURES = ['verification', 'verification-photo'];
 
 /* หมวดหมู่อยู่ในฐานข้อมูล (แอดมินเพิ่ม/ลบ/แก้ไขได้) — ค่าเริ่มต้นมาจาก seed */
 function ensureCategories() {
@@ -942,7 +945,9 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, {
       ok: true, name: 'FLO-RENT API', time: new Date().toISOString(),
       uptime: Math.round(process.uptime()), demo: DEMO_MODE,
-      mail: mailer.provider() || 'none'
+      mail: mailer.provider() || 'none',
+      startedAt: STARTED_AT,
+      features: SERVER_FEATURES
     });
   }
 

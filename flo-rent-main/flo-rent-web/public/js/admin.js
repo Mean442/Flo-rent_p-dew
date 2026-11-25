@@ -46,6 +46,8 @@
   var logs = [];
   var verifications = [];
   var verifyFilter = 'pending';
+  /* null = ตรวจไม่ได้ (ปล่อยผ่าน) · [] = เซิร์ฟเวอร์รุ่นเก่า */
+  var serverFeatures = null;
   var userQuery = '';
   var itemQuery = '';
   var bookingFilter = 'all';
@@ -165,12 +167,23 @@
       return;
     }
 
+    try {
+      var health = await API.get('/health');
+      serverFeatures = Array.isArray(health.features) ? health.features : [];
+    } catch (err) {
+      serverFeatures = null;
+    }
+
     if (me.role !== 'admin') {
       root.innerHTML = gate('ไม่มีสิทธิ์เข้าถึง', 'บัญชีนี้ไม่ใช่ผู้ดูแลระบบ — เข้าสู่ระบบด้วย admin@flo-rent.co', 'index.html');
       return;
     }
 
     await refresh();
+  }
+
+  function hasFeature(name) {
+    return serverFeatures === null || serverFeatures.indexOf(name) !== -1;
   }
 
   function query(path) {
@@ -264,7 +277,7 @@
   function verificationsPanel() {
     var rows = verifications.length ? verifications.map(function (entry) {
       var status = VERIFY_STATUS[entry.status] || { label: entry.status, cls: '' };
-      var photoBtn = entry.hasPhoto
+      var photoBtn = entry.hasPhoto && hasFeature('verification-photo')
         ? '<button class="btn-ghost" type="button" data-act="verify-photo" data-id="' + esc(entry.userId) +
             '" data-name="' + esc(entry.name) + '">ดูรูปบัตร</button>'
         : '';
@@ -293,6 +306,8 @@
     return '<div class="admin-panel">' +
       '<h2>ยืนยันตัวตน (' + verifications.length + ')</h2>' +
       '<p class="item-meta">ตรวจรูปบัตรกับชื่อ-นามสกุลก่อนอนุมัติ · รูปถูกเก็บแบบเข้ารหัสและลบภายใน 30 วัน</p>' +
+      (hasFeature('verification-photo') ? '' :
+        '<p class="pill pill-bad" style="display:block;padding:10px 14px;margin:0 0 14px">เซิร์ฟเวอร์ที่รันอยู่ยังเป็นโค้ดรุ่นเก่า (ไม่มีเส้นทางดูรูปบัตร) — ปิดเซิร์ฟเวอร์แล้วรัน <code>npm start</code> ใหม่</p>') +
       '<div class="admin-toolbar">' +
         '<label class="field" style="min-width:180px"><span>กรองตามสถานะ</span>' +
           '<select data-verify-filter>' +
@@ -722,7 +737,10 @@
         var photoData = await API.get('/admin/verifications/' + encodeURIComponent(id) + '/photo');
         showPhotoDialog(photoData.photo, btn.getAttribute('data-name') || '');
       } catch (err) {
-        toast(err.message || 'เปิดรูปไม่สำเร็จ');
+        var staleServer = err && err.status === 404 && /ไม่พบ API นี้/.test(String(err.message || ''));
+        toast(staleServer
+          ? 'เซิร์ฟเวอร์ที่รันอยู่ยังเป็นโค้ดรุ่นเก่า — ปิดเซิร์ฟเวอร์แล้วรัน npm start ใหม่'
+          : (err.message || 'เปิดรูปไม่สำเร็จ'));
       }
       btn.disabled = false;
       return;
