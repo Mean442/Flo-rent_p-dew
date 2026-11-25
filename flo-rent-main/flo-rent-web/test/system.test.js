@@ -92,6 +92,19 @@ function uniqueEmail(prefix) {
   return prefix + '-' + Date.now() + '-' + Math.random().toString(16).slice(2, 8) + '@example.com';
 }
 
+/* บัญชีที่ใช้ทำธุรกรรมในชุดทดสอบต้องผ่านการยืนยันตัวตน — ตั้งสถานะตรงในฐานข้อมูลชั่วคราวของเทสต์ */
+function markVerified(email) {
+  const user = db.data().users.find(function (entry) { return entry.email === email; });
+  assert.ok(user, 'ต้องพบผู้ใช้ ' + email + ' ในฐานข้อมูลทดสอบ');
+  user.verify = {
+    status: 'verified',
+    idMasked: '•••••••••0000',
+    reviewedAt: new Date().toISOString(),
+    reviewedBy: 'test'
+  };
+  db.persist();
+}
+
 /* สมัครสมาชิกตามขั้นตอนจริง: ขอรหัส OTP → ยืนยัน → สร้างบัญชี */
 async function signup(name, email) {
   const requested = await api('POST', '/api/auth/otp/request', { email: email, purpose: 'signup', name: name });
@@ -111,6 +124,7 @@ async function signup(name, email) {
     signupToken: verified.body.signupToken
   });
   assert.strictEqual(created.status, 201, 'สมัครสมาชิก → ' + created.status + ' ' + created.text);
+  markVerified(email);
   return { token: created.body.token, user: created.body.user, email: email };
 }
 

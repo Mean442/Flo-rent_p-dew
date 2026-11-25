@@ -94,6 +94,8 @@ npm start
 | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Upstash/KV REST — เปิดโหมดเก็บข้อมูลบน Redis (ตั้งโดย Vercel Storage) |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | ทางเลือกแทนสองตัวข้างบน |
 | `FLO_DB_KEY` | ชื่อ key ใน Redis (ค่าเริ่มต้น `florent:db`) — ตั้ง `florent:preview:db` เฉพาะ environment **Preview** เพื่อแยกข้อมูลทดสอบออกจาก production (Upstash free ให้ 1 database ต่อบัญชี จึงแยกด้วย key) |
+| `FLO_ID_SALT` | salt สำหรับ hash เลขบัตรประชาชน (ถ้าไม่ตั้งจะใช้ค่าเริ่มต้นของระบบ — ควรตั้งค่าสุ่มใน production) |
+| `FLO_ID_ENCRYPTION_KEY` | คีย์เข้ารหัสรูปบัตรประชาชน (AES-256-GCM) — ตั้งเป็น Secret ใน Vercel |
 
 ### ⚠️ อีเมลแอดมินต้องไม่ใช่อีเมลทดลอง
 
@@ -159,6 +161,17 @@ FLO_MAIL_FROM='FLO-RENT <no-reply@yourdomain.com>'
 - ถ้าส่งอีเมลไม่สำเร็จ ระบบจะถอดรหัส OTP ที่เพิ่งสร้างออก (ไม่นับคูลดาวน์ 60 วินาที) ผู้ใช้กดขอใหม่ได้ทันที
 - ตรวจสถานะผู้ให้บริการอีเมลได้ที่ `GET /api/health` (ฟิลด์ `mail`)
 - เก็บเฉพาะ **hash ของรหัส** (SHA-256) ในฐานข้อมูล ไม่เก็บรหัสจริง และลบรหัสทันทีที่ใช้สำเร็จ
+
+## การยืนยันตัวตนด้วยบัตรประชาชน
+
+ผู้ใช้ต้องยืนยันตัวตนก่อน **จองสินค้า** และ **ลงประกาศให้เช่า** (ดูล็อกอิน/ดูสินค้า/แก้โปรไฟล์ได้ตามปกติ)
+
+- **สิ่งที่เก็บ:** เลขบัตร 13 หลักเก็บเป็น SHA-256 + salt เพื่อกันใช้ซ้ำ และเก็บเฉพาะ 4 ตัวท้ายไว้แสดง; รูปบัตรเข้ารหัส AES-256-GCM และเก็บแยกจากฐานข้อมูลหลัก
+- **การตรวจสอบ:** ระบบตรวจ checksum เลขบัตรทันที จากนั้นแอดมินตรวจรูปกับชื่อ-นามสกุลแล้วอนุมัติ/ปฏิเสธผ่าน API (หน้าแอดมินอยู่ในเฟสถัดไป)
+- **รูปบัตรมีอายุ 30 วัน** หลังส่ง/ตรวจ (Redis key `florent:idphoto:<userId>` หรือไฟล์ใน `server/data/id-docs` เมื่อรันในเครื่อง)
+- **ผู้ใช้เดิม** ที่มีอยู่ก่อนเปิดระบบได้เวลาใช้งานต่อ **14 วัน** นับจากคำขอแรกหลัง deploy (`meta.verifyLaunchAt`) — บัญชีที่สมัครใหม่ต้องยืนยันก่อนทำธุรกรรม
+- **จำกัดการส่ง 3 ครั้ง/ชั่วโมง/บัญชี** และเลขบัตรหนึ่งเลขใช้ได้กับบัญชีเดียว
+- แอดมินไม่ติดด่าน; บัญชีทดลองในโหมดเดโมได้สถานะยืนยันแล้วอัตโนมัติ
 
 ## Deploy บน Vercel
 
@@ -277,6 +290,10 @@ Flo-rent_p-dew/                      # repo root บน GitHub
 | POST | `/api/auth/login` | เข้าสู่ระบบด้วยรหัสผ่าน → ส่ง OTP ทางอีเมลและคืน `otpRequired: true` (ผู้ใช้ทั่วไป) หรือ token ทันที (เฉพาะ `admin`) |
 | POST | `/api/auth/otp/request` | ขอรหัส OTP ทางอีเมล (`email`, `purpose`: `login` (ค่าเริ่มต้น) หรือ `signup`) |
 | POST | `/api/auth/otp/verify` | ยืนยันรหัส OTP (`email`, `code`, `purpose`) → token (login) หรือ `signupToken` (signup) |
+| GET | `/api/verification` | สถานะยืนยันตัวตนของตัวเอง (เลขบัตรแสดงแค่ 4 ตัวท้าย) |
+| POST | `/api/verification` | ส่งคำขอยืนยันตัวตน (`idNumber`, `fullName`, `photo` เป็น data URL) |
+| GET | `/api/admin/verifications?status=pending` | คิวรอตรวจสำหรับแอดมิน (ไม่ส่งเลขบัตรเต็ม) |
+| PATCH | `/api/admin/verifications/:userId` | อนุมัติ/ปฏิเสธคำขอ (`action`: `approve` / `reject`, `reason` เมื่อปฏิเสธ) |
 | POST | `/api/auth/logout` | ออกจากระบบ |
 | GET | `/api/me` | ข้อมูลบัญชี + สถิติ |
 | PATCH | `/api/me` | แก้ไขโปรไฟล์ |

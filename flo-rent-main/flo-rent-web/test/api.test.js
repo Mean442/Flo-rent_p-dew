@@ -93,6 +93,19 @@ async function loginOtp(email) {
   return verified.body;
 }
 
+/* บัญชีที่ใช้ทำธุรกรรมในชุดทดสอบต้องผ่านการยืนยันตัวตน — ตั้งสถานะตรงในฐานข้อมูลชั่วคราวของเทสต์ */
+function markVerified(email) {
+  const user = db.data().users.find(function (entry) { return entry.email === email; });
+  assert.ok(user, 'ต้องพบผู้ใช้ ' + email + ' ในฐานข้อมูลทดสอบ');
+  user.verify = {
+    status: 'verified',
+    idMasked: '•••••••••0000',
+    reviewedAt: new Date().toISOString(),
+    reviewedBy: 'test'
+  };
+  db.persist();
+}
+
 async function register(name, email) {
   const signupToken = await signupTokenFor(name, email);
   const res = await api('POST', '/api/auth/register', {
@@ -103,6 +116,7 @@ async function register(name, email) {
     signupToken: signupToken
   });
   assert.strictEqual(res.status, 201, 'register ' + email + ' → ' + res.status + ' ' + res.text);
+  markVerified(email);
   return res.body;
 }
 

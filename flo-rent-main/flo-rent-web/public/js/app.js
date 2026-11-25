@@ -22,6 +22,45 @@
     return 'FLO ' + Number(number || 0).toLocaleString('th-TH');
   }
 
+  /* รูปที่ผู้ใช้อัปโหลด: ย่อขนาดในเบราว์เซอร์แล้วส่งเป็น data URL */
+  function readPhoto(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var image = new Image();
+        image.onload = function () {
+          var max = 1200;
+          var scale = Math.min(1, max / Math.max(image.width, image.height));
+          var canvas = document.createElement('canvas');
+          canvas.width = Math.round(image.width * scale);
+          canvas.height = Math.round(image.height * scale);
+          canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.8));
+        };
+        image.onerror = function () { reject(new Error('อ่านรูปไม่สำเร็จ')); };
+        image.src = String(reader.result);
+      };
+      reader.onerror = function () { reject(new Error('อ่านไฟล์ไม่สำเร็จ')); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function verifyNeededHtml(message) {
+    return '<div class="form-card" style="margin-top:16px">' +
+      '<h2 style="font-size:20px">ต้องยืนยันตัวตนก่อนทำธุรกรรม</h2>' +
+      '<p class="muted">' + esc(message || 'แนบเลขบัตรประชาชนและรูปบัตรเพื่อให้แอดมินตรวจสอบ') + '</p>' +
+      '<p class="fine-print">เราเก็บเลขบัตรแบบเข้ารหัส/ปกปิด และลบรูปบัตรภายใน 30 วันหลังตรวจ</p>' +
+      '<a class="btn btn-maroon" href="profile.html#verify">ไปยืนยันตัวตน →</a>' +
+    '</div>';
+  }
+
+  function showVerifyNeeded(err, container) {
+    if (!err || !err.data || err.data.code !== 'NEED_VERIFY') return false;
+    toast(err.message);
+    if (container) container.innerHTML = verifyNeededHtml(err.message);
+    return true;
+  }
+
   var TX_LABELS = {
     topup: 'เติมเงิน',
     hold: 'กันเงินจอง',
@@ -1085,6 +1124,7 @@
         button.disabled = false;
         button.textContent = 'ยืนยันการจอง';
         if (err.status === 401) { requireLogin(); return; }
+        if (showVerifyNeeded(err, $('booking-card'))) return;
         showError(err);
       }
     });
@@ -1178,28 +1218,6 @@
       if (imageInput) imageInput.disabled = photos.length >= 4;
     }
 
-    function readPhoto(file) {
-      return new Promise(function (resolve, reject) {
-        var reader = new FileReader();
-        reader.onload = function () {
-          var image = new Image();
-          image.onload = function () {
-            var max = 1200;
-            var scale = Math.min(1, max / Math.max(image.width, image.height));
-            var canvas = document.createElement('canvas');
-            canvas.width = Math.round(image.width * scale);
-            canvas.height = Math.round(image.height * scale);
-            canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
-            resolve(canvas.toDataURL('image/jpeg', 0.8));
-          };
-          image.onerror = function () { reject(new Error('อ่านรูปไม่สำเร็จ')); };
-          image.src = String(reader.result);
-        };
-        reader.onerror = function () { reject(new Error('อ่านไฟล์ไม่สำเร็จ')); };
-        reader.readAsDataURL(file);
-      });
-    }
-
     if (imageInput) {
       imageInput.addEventListener('change', async function () {
         var files = Array.prototype.slice.call(imageInput.files || []);
@@ -1266,6 +1284,7 @@
         button.disabled = false;
         button.textContent = 'เผยแพร่ประกาศ';
         if (err.status === 401) { requireLogin(); return; }
+        if (showVerifyNeeded(err, wrap)) return;
         showError(err);
       }
     });
@@ -2018,6 +2037,105 @@
       }
     }
 
+    function verifySection(user) {
+      var info = user.verify || { status: 'unverified' };
+      var head = '<div class="section-head" style="margin-bottom:16px;padding-bottom:12px">' +
+        '<h2 style="font-size:22px">ยืนยันตัวตนด้วยบัตรประชาชน</h2></div>';
+
+      if (info.status === 'verified') {
+        return '<section class="form-card" id="verify" style="margin-bottom:26px">' + head +
+          '<p><span class="badge badge-returned">ยืนยันตัวตนแล้ว</span> ' +
+            (info.idMasked ? 'บัตร ' + esc(info.idMasked) : '') + '</p>' +
+          '<p class="fine-print">เลขบัตรถูกเก็บแบบเข้ารหัสและปกปิด · รูปบัตรถูกลบภายใน 30 วันหลังตรวจ</p>' +
+        '</section>';
+      }
+
+      if (info.status === 'pending') {
+        return '<section class="form-card" id="verify" style="margin-bottom:26px">' + head +
+          '<p><span class="badge badge-pending">รอแอดมินตรวจสอบ</span> ส่งเมื่อ ' +
+            thDate(info.submittedAt) + '</p>' +
+          '<p class="fine-print">ระหว่างรอตรวจยังจองหรือลงประกาศไม่ได้</p>' +
+        '</section>';
+      }
+
+      var rejected = info.status === 'rejected'
+        ? '<p class="fine-print" style="color:#a33">คำขอก่อนหน้าไม่ผ่าน: ' +
+            esc(info.rejectReason || 'ไม่ระบุเหตุผล') + '</p>'
+        : '';
+      var grace = info.graceUntil && Date.parse(info.graceUntil) > Date.now()
+        ? '<p class="fine-print">บัญชีเดิมใช้งานแบบปกติได้ถึง ' + thDate(info.graceUntil) +
+            ' หลังจากนั้นต้องยืนยันตัวตนก่อนจองหรือลงประกาศ</p>'
+        : '';
+
+      return '<section class="form-card" id="verify" style="margin-bottom:26px">' + head +
+        '<p class="muted">แนบเลขบัตรประชาชนและรูปบัตรเพื่อยืนยันตัวตน — ตรวจภายใน 1 วันทำการ</p>' +
+        rejected + grace +
+        '<form id="verify-form">' +
+          '<div class="form-grid">' +
+            '<label class="field"><span>เลขบัตรประชาชน</span>' +
+              '<input type="text" id="vf-id" inputmode="numeric" maxlength="17" placeholder="1 2345 67890 12 3" required></label>' +
+            '<label class="field"><span>ชื่อ-นามสกุลตามบัตร</span>' +
+              '<input type="text" id="vf-name" maxlength="120" required></label>' +
+            '<label class="field span-2"><span>รูปบัตรประชาชน (ด้านหน้า)</span>' +
+              '<input type="file" id="vf-photo" accept="image/*" required></label>' +
+          '</div>' +
+          '<label class="field" style="display:flex;gap:8px;align-items:flex-start;margin-top:12px">' +
+            '<input type="checkbox" id="vf-consent" style="width:auto;margin-top:3px">' +
+            '<span>ยินยอมให้เก็บเลขบัตร (เข้ารหัส/ปกปิด) และรูปบัตรเพื่อยืนยันตัวตน และให้ลบรูปภายใน 30 วันหลังตรวจ</span>' +
+          '</label>' +
+          '<p class="form-msg" id="vf-msg"></p>' +
+          '<div class="form-actions"><button class="btn btn-maroon" type="submit">ส่งคำขอยืนยัน</button></div>' +
+        '</form>' +
+      '</section>';
+    }
+
+    function bindVerifyForm() {
+      var form = $('verify-form');
+      if (!form) return;
+
+      var photo = '';
+      var input = $('vf-photo');
+      if (input) {
+        input.addEventListener('change', async function () {
+          var file = (input.files || [])[0];
+          if (!file) return;
+          if (!/^image\//.test(file.type)) { toast('ไฟล์นี้ไม่ใช่รูปภาพ'); input.value = ''; return; }
+          try {
+            photo = await readPhoto(file);
+            toast('แนบรูปบัตรแล้ว', 'ok');
+          } catch (err) {
+            toast(err && err.message ? err.message : 'อ่านรูปไม่สำเร็จ');
+          }
+        });
+      }
+
+      form.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        var msg = $('vf-msg');
+        if (!photo) { setMsgOn(msg, 'กรุณาแนบรูปบัตรประชาชน'); return; }
+        var consent = $('vf-consent');
+        if (consent && !consent.checked) { setMsgOn(msg, 'กรุณายอมรับนโยบายการเก็บข้อมูลก่อนส่ง'); return; }
+
+        var button = form.querySelector('button[type="submit"]');
+        button.disabled = true;
+        button.textContent = 'กำลังส่ง...';
+        try {
+          await API.post('/verification', {
+            idNumber: $('vf-id').value,
+            fullName: $('vf-name').value,
+            photo: photo
+          });
+          toast('ส่งคำขอยืนยันตัวตนแล้ว — รอแอดมินตรวจสอบ', 'ok');
+          await render();
+        } catch (err) {
+          button.disabled = false;
+          button.textContent = 'ส่งคำขอยืนยัน';
+          if (err.status === 401) { requireLogin(); return; }
+          setMsgOn(msg, err.message);
+        }
+      });
+    }
+
     async function render() {
       root.innerHTML = '<p class="muted" style="padding:40px 0">กำลังโหลดบัญชี...</p>';
       var me;
@@ -2071,6 +2189,7 @@
             '<button class="btn btn-ghost btn-block" type="button" id="logout-btn" style="margin-top:10px">ออกจากระบบ</button>' +
           '</aside>' +
           '<div>' +
+            verifySection(user) +
             '<form class="form-card" id="profile-form">' +
               '<div class="form-grid">' +
                 '<label class="field span-2"><span>ชื่อที่ใช้แสดง</span><input type="text" id="pf-name" required value="' + esc(user.name) + '"></label>' +
@@ -2190,6 +2309,8 @@
           setMsgOn(msg, err.message);
         }
       });
+
+      bindVerifyForm();
 
       void user;
     }

@@ -200,4 +200,4 @@ function flushSync() {
   try { writeNow(); } catch (err) { console.error('[db] flush ไม่สำเร็จ:', err.message); }
 }
 
-module.exports = { init, load, commit, data, persist, settle, flushSync, DB_FILE, DATA_DIR, IS_REMOTE };
+module.exports = { init, load, commit, data, persist, settle, flushSync, DB_FILE, DATA_DIR, IS_REMOTE, command: remote };

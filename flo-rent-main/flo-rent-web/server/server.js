@@ -17,6 +17,7 @@ const auth = require('./auth');
 const db = require('./db');
 const seed = require('./seed');
 const mailer = require('./mailer');
+const verify = require('./verify');
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -62,6 +63,95 @@ function ensureCatalog() {
   logEvent('catalog.seed', 'เติมแคตตาล็อกตั้งต้น ' + items.length + ' รายการ (ฐานข้อมูลยังไม่มีประกาศ)', null, null);
   db.persist();
 }
+/* ---------- การยืนยันตัวตนด้วยบัตรประชาชน ---------- */
+
+const VERIFY_GRACE_DAYS = 14;
+const VERIFY_SUBMITS_PER_HOUR = 3;
+const ID_PHOTO_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/;
+
+function verificationOf(user) {
+  return (user && user.verify) || { status: 'unverified' };
+}
+
+/* ผู้ใช้ทำธุรกรรมได้เมื่อ: เป็นแอดมิน / ยืนยันแล้ว / ยังอยู่ในช่วงผ่อนผันของผู้ใช้เดิม */
+function canTransact(user) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  const record = verificationOf(user);
+  if (record.status === 'verified') return true;
+  if (record.graceUntil && Date.parse(record.graceUntil) > Date.now()) return true;
+  return false;
+}
+
+function publicVerification(user) {
+  const record = verificationOf(user);
+  return {
+    status: record.status,
+    idMasked: record.idMasked || '',
+    fullName: record.fullName || '',
+    submittedAt: record.submittedAt || null,
+    reviewedAt: record.reviewedAt || null,
+    rejectReason: record.rejectReason || '',
+    graceUntil: record.graceUntil || null,
+    canTransact: canTransact(user)
+  };
+}
+
+function requireTransaction(user) {
+  if (canTransact(user)) return user;
+  const record = verificationOf(user);
+  let message = 'ต้องยืนยันตัวตนด้วยบัตรประชาชนก่อนจองหรือลงประกาศ — ไปที่หน้าบัญชีของฉัน';
+  if (record.status === 'pending') {
+    message = 'คำขอยืนยันตัวตนอยู่ระหว่างการตรวจสอบ — ยังจองหรือลงประกาศไม่ได้จนกว่าแอดมินจะอนุมัติ';
+  } else if (record.status === 'rejected') {
+    message = 'คำขอยืนยันตัวตนไม่ผ่าน (' + (record.rejectReason || 'ไม่ระบุเหตุผล') + ') — ส่งใหม่ได้ที่หน้าบัญชีของฉัน';
+  }
+  fail(403, message, 'NEED_VERIFY');
+}
+
+/* จำกัดการส่งคำขอของผู้ใช้แต่ละคน (3 ครั้ง/ชั่วโมง) */
+function checkVerifyRate(user) {
+  const now = Date.now();
+  const recent = (Array.isArray(user.verifySubmits) ? user.verifySubmits : []).filter(function (at) {
+    return now - Number(at) < 3600000;
+  });
+  if (recent.length >= VERIFY_SUBMITS_PER_HOUR) {
+    fail(429, 'ส่งคำขอยืนยันตัวตนบ่อยเกินไป — รอสักครู่แล้วลองใหม่');
+  }
+  recent.push(now);
+  user.verifySubmits = recent;
+}
+
+/*
+ * ผู้ใช้เดิมที่มีอยู่ก่อนเปิดระบบนี้ได้เวลาใช้งานต่อ 14 วัน (นับจากคำขอแรกหลัง deploy)
+ * บัญชีที่สมัครใหม่ต้องยืนยันก่อนทำธุรกรรม; แอดมินและบัญชีทดลองได้สถานะยืนยันแล้ว
+ */
+function ensureVerification() {
+  const meta = store().meta || (store().meta = {});
+  let changed = false;
+  if (!meta.verifyLaunchAt) {
+    meta.verifyLaunchAt = new Date().toISOString();
+    changed = true;
+  }
+  const launchAt = Date.parse(meta.verifyLaunchAt) || Date.now();
+  const graceUntil = new Date(launchAt + VERIFY_GRACE_DAYS * DAY).toISOString();
+
+  store().users.forEach(function (user) {
+    if (user.verify) return;
+    changed = true;
+    if (user.role === 'admin' || (DEMO_MODE && DEMO_EMAILS.indexOf(user.email) !== -1)) {
+      user.verify = { status: 'verified', idMasked: '', reviewedAt: new Date().toISOString(), note: 'บัญชีระบบ' };
+      return;
+    }
+    const joined = Date.parse(user.joinedAt || '');
+    user.verify = joined && joined < launchAt
+      ? { status: 'unverified', graceUntil: graceUntil }
+      : { status: 'unverified' };
+  });
+
+  if (changed) db.persist();
+}
+
 
 function itemCategories() { return store().categories; }
 function jobCategories() { return store().jobCategories; }
@@ -108,9 +198,10 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
-function fail(status, message) {
+function fail(status, message, code) {
   const err = new Error(message);
   err.status = status;
+  if (code) err.code = code;
   /* ข้อความที่ตั้งใจส่งให้ผู้ใช้เห็น (ไม่ใช่ stack trace ภายใน) */
   err.expose = true;
   throw err;
@@ -344,7 +435,8 @@ function publicUser(user) {
     age: user.age, location: user.location, avatar: user.avatar, bio: user.bio,
     role: user.role, status: user.status, rating: user.rating, reviews: user.reviews,
     wallet: walletOf(user), credit: creditOf(user), creditLevel: creditLevel(creditOf(user)).label,
-    joinedAt: user.joinedAt
+    joinedAt: user.joinedAt,
+    verify: publicVerification(user)
   };
 }
 
@@ -833,6 +925,7 @@ async function handleApi(req, res, url) {
 
   ensureCategories();
   ensureCatalog();
+  ensureVerification();
 
   if (key === 'GET /api/health') {
     return sendJson(res, 200, {
@@ -888,6 +981,7 @@ async function handleApi(req, res, url) {
       reviews: 0,
       wallet: WELCOME_TOPUP,
       credit: CREDIT_START,
+      verify: { status: 'unverified' },
       joinedAt: new Date().toISOString()
     };
     store().users.push(user);
@@ -1104,6 +1198,7 @@ async function handleApi(req, res, url) {
 
   if (key === 'POST /api/items') {
     const user = requireUser(req);
+    requireTransaction(user);
     const payload = await readBody(req);
     const cat = asEnum(String(payload.cat || ''), 'หมวดหมู่', categoryKeys());
     const item = {
@@ -1192,6 +1287,7 @@ async function handleApi(req, res, url) {
 
   if (key === 'POST /api/bookings') {
     const user = requireUser(req);
+    requireTransaction(user);
     const payload = await readBody(req);
     const item = store().items.find(function (entry) { return entry.id === String(payload.itemId || ''); });
     if (!item) fail(404, 'ไม่พบสินค้าชิ้นนี้');
@@ -1879,6 +1975,101 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { ok: true });
   }
 
+  /* ---- ยืนยันตัวตน (บัตรประชาชน) ---- */
+
+  if (key === 'GET /api/verification') {
+    const user = requireUser(req);
+    return sendJson(res, 200, { verification: publicVerification(user) });
+  }
+
+  if (key === 'POST /api/verification') {
+    const user = requireUser(req);
+    const current = verificationOf(user);
+    if (current.status === 'verified') fail(409, 'บัญชีนี้ยืนยันตัวตนแล้ว');
+    if (current.status === 'pending') fail(409, 'คำขอยืนยันตัวตนอยู่ระหว่างการตรวจสอบ');
+
+    const payload = await readBody(req);
+    const idNumber = asString(payload.idNumber, 'เลขบัตรประชาชน', { max: 25 });
+    if (!verify.isValidThaiId(idNumber)) {
+      fail(400, 'เลขบัตรประชาชนไม่ถูกต้อง (ต้องเป็นตัวเลข 13 หลักและผ่านการตรวจสอบ)');
+    }
+    const fullName = asString(payload.fullName, 'ชื่อ-นามสกุลตามบัตร', { min: 4, max: 120 });
+    const photo = String(payload.photo || '');
+    if (!photo) fail(400, 'ต้องแนบรูปบัตรประชาชน');
+    if (!ID_PHOTO_RE.test(photo)) fail(400, 'รูปบัตรต้องเป็นไฟล์ JPEG / PNG / WebP');
+    if (Buffer.byteLength(photo) > verify.MAX_PHOTO_BYTES) fail(413, 'รูปบัตรใหญ่เกิน 1.2MB — ย่อรูปแล้วลองใหม่');
+
+    const idHash = verify.hashId(idNumber);
+    const duplicate = store().users.some(function (entry) {
+      return entry.id !== user.id && entry.verify && entry.verify.idHash === idHash;
+    });
+    if (duplicate) fail(409, 'เลขบัตรประชาชนนี้ถูกใช้ยืนยันตัวตนกับบัญชีอื่นแล้ว');
+    checkVerifyRate(user);
+
+    const stored = await verify.savePhoto(user.id, photo);
+    user.verify = {
+      status: 'pending',
+      idHash: idHash,
+      idMasked: verify.maskId(idNumber),
+      fullName: fullName,
+      submittedAt: new Date().toISOString(),
+      photoExpiresAt: stored.expiresAt
+    };
+    logEvent('verification.submit', 'ส่งคำขอยืนยันตัวตน: ' + user.name + ' (' + user.verify.idMasked + ')', user, user.id);
+    db.persist();
+    return sendJson(res, 201, { verification: publicVerification(user) });
+  }
+
+  if (key === 'GET /api/admin/verifications') {
+    requireAdmin(req);
+    const status = String(url.searchParams.get('status') || 'pending');
+    const list = store().users.filter(function (entry) {
+      if (!entry.verify) return false;
+      return status === 'all' ? true : entry.verify.status === status;
+    }).map(function (entry) {
+      return {
+        userId: entry.id,
+        name: entry.name,
+        email: entry.email,
+        status: entry.verify.status,
+        idMasked: entry.verify.idMasked || '',
+        fullName: entry.verify.fullName || '',
+        submittedAt: entry.verify.submittedAt || null,
+        reviewedAt: entry.verify.reviewedAt || null,
+        rejectReason: entry.verify.rejectReason || '',
+        hasPhoto: !!entry.verify.photoExpiresAt,
+        photoExpiresAt: entry.verify.photoExpiresAt || null
+      };
+    });
+    return sendJson(res, 200, { verifications: list, total: list.length });
+  }
+
+  const adminVerifyMatch = /^\/api\/admin\/verifications\/([\w-]+)$/.exec(pathname);
+  if (adminVerifyMatch && method === 'PATCH') {
+    const admin = requireAdmin(req);
+    const target = store().users.find(function (entry) { return entry.id === adminVerifyMatch[1]; });
+    if (!target) fail(404, 'ไม่พบผู้ใช้นี้');
+    if (!target.verify || target.verify.status !== 'pending') fail(409, 'ผู้ใช้นี้ไม่ได้อยู่ในคิวรอตรวจ');
+
+    const payload = await readBody(req);
+    const action = asEnum(String(payload.action || ''), 'การกระทำ', ['approve', 'reject']);
+    target.verify.reviewedAt = new Date().toISOString();
+    target.verify.reviewedBy = admin.id;
+
+    if (action === 'approve') {
+      target.verify.status = 'verified';
+      target.verify.rejectReason = '';
+      logEvent('verification.approve', 'อนุมัติการยืนยันตัวตนของ ' + target.name, admin, target.id);
+    } else {
+      target.verify.status = 'rejected';
+      target.verify.rejectReason = asString(payload.reason || payload.note, 'เหตุผลที่ปฏิเสธ', { min: 2, max: 200 });
+      logEvent('verification.reject', 'ปฏิเสธการยืนยันตัวตนของ ' + target.name + ': ' + target.verify.rejectReason, admin, target.id);
+    }
+
+    db.persist();
+    return sendJson(res, 200, { user: publicUser(target) });
+  }
+
   return sendJson(res, 404, { error: 'ไม่พบ API นี้' });
 }
 
@@ -1903,7 +2094,9 @@ function respond(req, res) {
     const status = err && err.status ? err.status : 500;
     if (status >= 500 && !err.expose) console.error('[api]', err);
     if (res.headersSent) return res.end();
-    sendJson(res, status, { error: status >= 500 && !err.expose ? 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์' : err.message });
+    const payload = { error: status >= 500 && !err.expose ? 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์' : err.message };
+    if (err && err.code) payload.code = err.code;
+    sendJson(res, status, payload);
   });
 }
 
