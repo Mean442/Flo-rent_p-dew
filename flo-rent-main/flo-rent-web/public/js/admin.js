@@ -9,6 +9,7 @@
   var TABS = [
     ['overview', 'ภาพรวม'],
     ['users', 'ผู้ใช้'],
+    ['verifications', 'ยืนยันตัวตน'],
     ['items', 'ประกาศ'],
     ['categories', 'หมวดหมู่'],
     ['bookings', 'การจอง'],
@@ -43,6 +44,8 @@
   var requests = [];
   var walletData = null;
   var logs = [];
+  var verifications = [];
+  var verifyFilter = 'pending';
   var userQuery = '';
   var itemQuery = '';
   var bookingFilter = 'all';
@@ -188,6 +191,8 @@
         await loadCats();
       } else if (tab === 'bookings') {
         bookings = (await API.get(query('/admin/bookings?status=' + encodeURIComponent(bookingFilter)))).bookings;
+      } else if (tab === 'verifications') {
+        verifications = (await API.get(query('/admin/verifications?status=' + encodeURIComponent(verifyFilter)))).verifications;
       } else if (tab === 'requests') {
         requests = (await API.get(query('/admin/requests'))).requests;
       } else if (tab === 'wallet') {
@@ -238,12 +243,128 @@
   function panel() {
     if (tab === 'overview') return overviewPanel();
     if (tab === 'users') return usersPanel();
+    if (tab === 'verifications') return verificationsPanel();
     if (tab === 'items') return itemsPanel();
     if (tab === 'categories') return categoriesPanel();
     if (tab === 'bookings') return bookingsPanel();
     if (tab === 'requests') return requestsPanel();
     if (tab === 'wallet') return walletPanel();
     return logsPanel();
+  }
+
+  /* ---- ยืนยันตัวตน ---- */
+
+  var VERIFY_STATUS = {
+    pending: { label: 'รอตรวจ', cls: 'pill-warn' },
+    verified: { label: 'ยืนยันแล้ว', cls: 'pill-ok' },
+    rejected: { label: 'ไม่ผ่าน', cls: 'pill-bad' },
+    unverified: { label: 'ยังไม่ส่ง', cls: '' }
+  };
+
+  function verificationsPanel() {
+    var rows = verifications.length ? verifications.map(function (entry) {
+      var status = VERIFY_STATUS[entry.status] || { label: entry.status, cls: '' };
+      var photoBtn = entry.hasPhoto
+        ? '<button class="btn-ghost" type="button" data-act="verify-photo" data-id="' + esc(entry.userId) +
+            '" data-name="' + esc(entry.name) + '">ดูรูปบัตร</button>'
+        : '';
+      var actions = entry.status === 'pending'
+        ? '<div class="admin-actions">' + photoBtn +
+            '<button class="btn-mini" type="button" data-act="verify-approve" data-id="' + esc(entry.userId) +
+              '" data-name="' + esc(entry.name) + '">อนุมัติ</button>' +
+            '<button class="btn-ghost" type="button" data-act="verify-reject" data-id="' + esc(entry.userId) +
+              '" data-name="' + esc(entry.name) + '">ปฏิเสธ</button>' +
+          '</div>'
+        : (photoBtn || '<span class="item-meta">—</span>');
+
+      return '<tr>' +
+        '<td><div class="row-title">' + esc(entry.name) + '</div>' +
+          '<div class="item-meta">' + esc(entry.email) + '</div></td>' +
+        '<td>' + esc(entry.fullName || '—') + '</td>' +
+        '<td>' + esc(entry.idMasked || '—') + '</td>' +
+        '<td><span class="pill ' + status.cls + '">' + status.label + '</span>' +
+          (entry.rejectReason ? '<div class="item-meta">' + esc(entry.rejectReason) + '</div>' : '') + '</td>' +
+        '<td>' + (entry.submittedAt ? thDate(entry.submittedAt) : '—') +
+          '<div class="item-meta">ตรวจ ' + (entry.reviewedAt ? thDate(entry.reviewedAt) : '—') + '</div></td>' +
+        '<td>' + actions + '</td>' +
+      '</tr>';
+    }).join('') : emptyRow(6, verifyFilter === 'pending' ? 'ไม่มีคำขอรอตรวจ' : 'ไม่มีข้อมูล');
+
+    return '<div class="admin-panel">' +
+      '<h2>ยืนยันตัวตน (' + verifications.length + ')</h2>' +
+      '<p class="item-meta">ตรวจรูปบัตรกับชื่อ-นามสกุลก่อนอนุมัติ · รูปถูกเก็บแบบเข้ารหัสและลบภายใน 30 วัน</p>' +
+      '<div class="admin-toolbar">' +
+        '<label class="field" style="min-width:180px"><span>กรองตามสถานะ</span>' +
+          '<select data-verify-filter>' +
+            ['pending', 'verified', 'rejected', 'unverified', 'all'].map(function (value) {
+              var label = value === 'all' ? 'ทั้งหมด' : (VERIFY_STATUS[value] ? VERIFY_STATUS[value].label : value);
+              return '<option value="' + value + '"' + (verifyFilter === value ? ' selected' : '') + '>' + label + '</option>';
+            }).join('') +
+          '</select></label>' +
+      '</div>' +
+      '<div class="table-wrap"><table class="admin-table">' +
+        '<thead><tr><th>ผู้ใช้</th><th>ชื่อตามบัตร</th><th>เลขบัตร</th><th>สถานะ</th><th>วันที่</th><th>จัดการ</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table></div>' +
+    '</div>';
+  }
+
+  function showPhotoDialog(photo, caption) {
+    var dlg = document.createElement('dialog');
+    dlg.className = 'confirm-dialog';
+    dlg.innerHTML = '<p class="eyebrow">รูปบัตรประชาชน</p>' +
+      '<h2 class="display display-sm" style="font-size:20px">' + esc(caption || '') + '</h2>' +
+      '<img alt="รูปบัตรประชาชนของผู้ใช้" src="' + esc(photo) + '" ' +
+        'style="max-width:100%;max-height:60vh;border-radius:12px;border:1px solid rgba(0,0,0,.12)">' +
+      '<div class="confirm-actions"><button class="btn btn-ghost" type="button" data-close>ปิด</button></div>';
+
+    dlg.addEventListener('click', function (event) {
+      if (event.target === dlg || event.target.closest('[data-close]')) dlg.close();
+    });
+    dlg.addEventListener('close', function () { dlg.remove(); });
+    document.body.appendChild(dlg);
+    dlg.showModal();
+  }
+
+  function reasonDialog(name) {
+    return new Promise(function (resolve) {
+      var dlg = document.createElement('dialog');
+      dlg.className = 'confirm-dialog';
+      dlg.innerHTML = '<p class="eyebrow">ปฏิเสธคำขอยืนยันตัวตน</p>' +
+        '<h2 class="display display-sm" style="font-size:22px">' + esc(name || 'ผู้ใช้') + '</h2>' +
+        '<label class="field"><span>เหตุผลที่ปฏิเสธ (ผู้ใช้จะเห็นข้อความนี้)</span>' +
+          '<textarea data-reason style="min-height:90px" placeholder="เช่น รูปบัตรไม่ชัด ถ่ายไม่ครบมุม"></textarea></label>' +
+        '<div class="confirm-actions">' +
+          '<button class="btn btn-ghost" type="button" data-cancel>ยกเลิก</button>' +
+          '<button class="btn btn-maroon" type="button" data-ok>ยืนยันปฏิเสธ</button>' +
+        '</div>';
+
+      var settled = false;
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        if (dlg.open) dlg.close();
+        dlg.remove();
+        resolve(value);
+      }
+
+      dlg.addEventListener('click', function (event) {
+        if (event.target === dlg) { finish(''); return; }
+        if (event.target.closest('[data-cancel]')) { finish(''); return; }
+        if (event.target.closest('[data-ok]')) {
+          finish(String(dlg.querySelector('[data-reason]').value || '').trim());
+        }
+      });
+      dlg.addEventListener('cancel', function (event) {
+        event.preventDefault();
+        finish('');
+      });
+
+      document.body.appendChild(dlg);
+      dlg.showModal();
+      var box = dlg.querySelector('[data-reason]');
+      if (box) box.focus();
+    });
   }
 
   /* ---- overview ---- */
@@ -595,6 +716,35 @@
     var id = btn.getAttribute('data-id');
     var value = btn.getAttribute('data-value');
 
+    if (act === 'verify-photo') {
+      btn.disabled = true;
+      try {
+        var photoData = await API.get('/admin/verifications/' + encodeURIComponent(id) + '/photo');
+        showPhotoDialog(photoData.photo, btn.getAttribute('data-name') || '');
+      } catch (err) {
+        toast(err.message || 'เปิดรูปไม่สำเร็จ');
+      }
+      btn.disabled = false;
+      return;
+    }
+
+    if (act === 'verify-reject') {
+      var reason = await reasonDialog(btn.getAttribute('data-name') || 'ผู้ใช้');
+      if (!reason) return;
+      if (reason.length < 2) { toast('กรุณาระบุเหตุผลอย่างน้อย 2 ตัวอักษร'); return; }
+      btn.setAttribute('data-reason', reason);
+    }
+
+    if (act === 'verify-approve') {
+      var sureApprove = await confirmDialog({
+        eyebrow: 'อนุมัติการยืนยันตัวตน',
+        title: 'อนุมัติให้ผู้ใช้นี้ทำธุรกรรม?',
+        message: 'ผู้ใช้จะจองและลงประกาศได้ทันที',
+        confirmText: 'อนุมัติ'
+      });
+      if (!sureApprove) return;
+    }
+
     if (act === 'user-status' && value === 'suspended') {
       var sureSuspend = await confirmDialog({
         eyebrow: 'ระงับบัญชี',
@@ -626,6 +776,8 @@
     busy = true;
     btn.disabled = true;
     try {
+      if (act === 'verify-approve') await API.patch('/admin/verifications/' + encodeURIComponent(id), { action: 'approve' });
+      if (act === 'verify-reject') await API.patch('/admin/verifications/' + encodeURIComponent(id), { action: 'reject', reason: btn.getAttribute('data-reason') || 'ไม่ผ่านการตรวจสอบ' });
       if (act === 'user-role') await API.patch('/admin/users/' + encodeURIComponent(id), { role: value });
       if (act === 'user-status') await API.patch('/admin/users/' + encodeURIComponent(id), { status: value });
       if (act === 'item-toggle') await API.patch('/admin/items/' + encodeURIComponent(id), { status: value });
@@ -653,6 +805,13 @@
       } catch (err) {
         toast(err.message || 'อัปเดตไม่สำเร็จ');
       }
+      await refresh();
+      return;
+    }
+
+    var verifySelect = event.target.closest('[data-verify-filter]');
+    if (verifySelect) {
+      verifyFilter = verifySelect.value;
       await refresh();
       return;
     }

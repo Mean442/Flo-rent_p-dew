@@ -14,11 +14,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const { spawn } = require('child_process');
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'flo-rent-verify-'));
 process.env.FLO_DATA_DIR = DATA_DIR;
 process.env.NODE_ENV = 'test';
 process.env.FLO_RATE_LIMIT_PER_MIN = '1000';
+/* ทดสอบเส้นทาง production (ต้องรออนุมัติ) แม้เทสต์จะรันในโหมดเดโม */
+process.env.FLO_DEMO_AUTO_VERIFY = '0';
 delete process.env.KV_REST_API_URL;
 delete process.env.UPSTASH_REDIS_REST_URL;
 
@@ -302,4 +305,92 @@ test('แอดมินไม่ต้องยืนยันตัวตน�
     title: 'ประกาศโดยแอดมิน', cat: 'general', price: 50, deposit: 0
   }, { token: token });
   assert.strictEqual(item.status, 201, item.text);
+});
+
+/* ---------- 8. รูปบัตรสำหรับแอดมิน ---------- */
+
+test('แอดมินเปิดดูรูปบัตรได้ คนทั่วไปเปิดไม่ได้ และบันทึก log ทุกครั้ง', async function () {
+  const token = await adminToken();
+  const user = db.data().users.find(function (entry) { return entry.email === state.renter.email; });
+
+  const forbidden = await api('GET', '/api/admin/verifications/' + user.id + '/photo', undefined, { token: state.renter.token });
+  assert.strictEqual(forbidden.status, 403);
+
+  const photo = await api('GET', '/api/admin/verifications/' + user.id + '/photo', undefined, { token: token });
+  assert.strictEqual(photo.status, 200, photo.text);
+  assert.strictEqual(photo.body.photo, PHOTO, 'ต้องได้รูปเดิมที่ผู้ใช้ส่งมา');
+
+  const unknown = await api('GET', '/api/admin/verifications/u-unknown/photo', undefined, { token: token });
+  assert.strictEqual(unknown.status, 404);
+
+  assert.ok(db.data().logs.some(function (entry) {
+    return entry.action === 'verification.photo.view';
+  }), 'ต้องบันทึกว่าแอดมินเปิดดูรูป');
+});
+
+/* ---------- 9. โหมดเดโม: ผ่านอัตโนมัติ ---------- */
+
+test('โหมดเดโม: บัญชีที่สมัครใหม่ผ่านการยืนยันตัวตนอัตโนมัติ', async function () {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flo-rent-demo-'));
+  const port = 36000 + Math.floor(Math.random() * 2000);
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'server', 'server.js')], {
+    env: Object.assign({}, process.env, {
+      NODE_ENV: 'test',
+      FLO_DATA_DIR: dir,
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      FLO_RATE_LIMIT_PER_MIN: '1000',
+      FLO_DEMO_AUTO_VERIFY: ''
+    }),
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const origin = 'http://127.0.0.1:' + port;
+
+  try {
+    let ready = false;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      try {
+        const res = await fetch(origin + '/api/health');
+        if (res.ok) { ready = true; break; }
+      } catch (err) { /* ยังไม่ขึ้น */ }
+      await new Promise(function (resolve) { setTimeout(resolve, 100); });
+    }
+    assert.ok(ready, 'เซิร์ฟเวอร์โหมดเดโมต้องเริ่มทำงาน');
+
+    const email = uniqueEmail('vf-demo');
+    const requested = await (await fetch(origin + '/api/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, purpose: 'signup', name: 'เดโม ออโต้' })
+    })).json();
+    const confirmed = await (await fetch(origin + '/api/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, code: requested.devCode, purpose: 'signup' })
+    })).json();
+    const created = await (await fetch(origin + '/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'เดโม ออโต้',
+        email: email,
+        password: 'test-password-1234',
+        age: 25,
+        signupToken: confirmed.signupToken
+      })
+    })).json();
+
+    assert.strictEqual(created.user.verify.status, 'verified', 'โหมดเดโมต้องผ่านอัตโนมัติ');
+    assert.strictEqual(created.user.verify.canTransact, true, 'โหมดเดโมต้องทำธุรกรรมได้ทันที');
+
+    const item = await fetch(origin + '/api/items', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + created.token },
+      body: JSON.stringify({ title: 'ของเดโม', cat: 'general', price: 50, deposit: 0 })
+    });
+    assert.strictEqual(item.status, 201, 'โหมดเดโมต้องลงประกาศได้ทันที');
+  } finally {
+    try { child.kill(); } catch (err) { /* ไม่เป็นไร */ }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

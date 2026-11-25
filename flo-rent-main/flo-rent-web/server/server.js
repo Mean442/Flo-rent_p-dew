@@ -137,9 +137,16 @@ function ensureVerification() {
   const graceUntil = new Date(launchAt + VERIFY_GRACE_DAYS * DAY).toISOString();
 
   store().users.forEach(function (user) {
-    if (user.verify) return;
+    if (user.verify) {
+      /* โหมดเดโม: บัญชีที่ยังไม่เคยส่งข้อมูลให้ผ่านอัตโนมัติ (ไม่แตะคำขอที่รอตรวจหรือถูกปฏิเสธ) */
+      if (DEMO_AUTO_VERIFY && user.verify.status === 'unverified' && !user.verify.idHash) {
+        user.verify = { status: 'verified', idMasked: '', reviewedAt: new Date().toISOString(), note: 'โหมดเดโม: ผ่านอัตโนมัติ' };
+        changed = true;
+      }
+      return;
+    }
     changed = true;
-    if (user.role === 'admin' || (DEMO_MODE && DEMO_EMAILS.indexOf(user.email) !== -1)) {
+    if (user.role === 'admin' || DEMO_AUTO_VERIFY) {
       user.verify = { status: 'verified', idMasked: '', reviewedAt: new Date().toISOString(), note: 'บัญชีระบบ' };
       return;
     }
@@ -211,6 +218,10 @@ function fail(status, message, code) {
 
 const DEMO_MODE = process.env.NODE_ENV !== 'production';
 const DEMO_EMAILS = ['admin@flo-rent.co', 'demo@flo-rent.co', 'owner@flo-rent.co'];
+/* โหมดเดโม: บัญชีที่สมัครใหม่ผ่านการยืนยันตัวตนอัตโนมัติ — production ต้องรอแอดมินอนุมัติ */
+const DEMO_AUTO_VERIFY = process.env.FLO_DEMO_AUTO_VERIFY !== undefined
+  ? process.env.FLO_DEMO_AUTO_VERIFY !== '0'
+  : DEMO_MODE;
 
 function allowedOriginHosts() {
   return String(process.env.FLO_ALLOWED_ORIGINS || '')
@@ -981,7 +992,9 @@ async function handleApi(req, res, url) {
       reviews: 0,
       wallet: WELCOME_TOPUP,
       credit: CREDIT_START,
-      verify: { status: 'unverified' },
+      verify: DEMO_AUTO_VERIFY
+        ? { status: 'verified', idMasked: '', reviewedAt: new Date().toISOString(), note: 'โหมดเดโม: ผ่านอัตโนมัติ' }
+        : { status: 'unverified' },
       joinedAt: new Date().toISOString()
     };
     store().users.push(user);
@@ -2068,6 +2081,22 @@ async function handleApi(req, res, url) {
 
     db.persist();
     return sendJson(res, 200, { user: publicUser(target) });
+  }
+
+  /* รูปบัตรสำหรับแอดมินเท่านั้น: ถอดรหัสแล้วส่งให้ดูทีละครั้ง พร้อมบันทึกว่าใครเปิดดู */
+  const adminVerifyPhotoMatch = /^\/api\/admin\/verifications\/([\w-]+)\/photo$/.exec(pathname);
+  if (adminVerifyPhotoMatch && method === 'GET') {
+    const admin = requireAdmin(req);
+    const target = store().users.find(function (entry) { return entry.id === adminVerifyPhotoMatch[1]; });
+    if (!target || !target.verify) fail(404, 'ไม่พบคำขอยืนยันตัวตนนี้');
+
+    let photo = null;
+    try { photo = await verify.readPhoto(target.id); } catch (err) { photo = null; }
+    if (!photo) fail(404, 'ไม่พบรูปบัตร (อาจถูกลบตามระยะเวลาเก็บข้อมูลแล้ว)');
+
+    logEvent('verification.photo.view', 'แอดมินเปิดดูรูปบัตรของ ' + target.name, admin, target.id);
+    db.persist();
+    return sendJson(res, 200, { photo: photo, expiresAt: target.verify.photoExpiresAt || null });
   }
 
   return sendJson(res, 404, { error: 'ไม่พบ API นี้' });
