@@ -1638,345 +1638,513 @@
   /* ---------- เข้าสู่ระบบ / สมัครสมาชิก ---------- */
 
   async function initLogin() {
-    var tabs = $('auth-tabs');
-    if (!tabs) return;
+    var card = $('auth-card');
+    if (!card) return;
 
-    var loginForm = $('login-form');
-    var registerForm = $('register-form');
-    var otpForm = $('otp-form');
-    var otpStage = 'email';
-    var otpEmail = '';
-    var otpTimer = null;
-    var regStage = 'form';
-    var regEmail = '';
-    var regTimer = null;
+    var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    var panes = card.querySelectorAll('[data-pane]');
+    var steps = $('auth-steps');
+    var kicker = $('auth-kicker');
+    var title = $('auth-title');
+    var sub = $('auth-sub');
+    var otpBoxes = $('otp-boxes') ? Array.prototype.slice.call($('otp-boxes').querySelectorAll('.otp-box')) : [];
+
+    var state = {
+      mode: 'email',
+      intent: 'login',
+      email: '',
+      name: '',
+      signupToken: '',
+      back: 'email',
+      resendTimer: null
+    };
 
     if (sessionUser) {
-      var card = tabs.parentElement;
-      if (card) {
-        card.innerHTML = '' +
-          '<p class="eyebrow">เข้าสู่ระบบอยู่แล้ว</p>' +
-          '<h2 class="display display-sm" style="font-size:28px">' + esc(String(sessionUser.name || '').split(' ')[0]) + '</h2>' +
-          '<p class="item-fine">' + esc(sessionUser.email) + ' · ' +
-            (sessionUser.role === 'admin' ? 'ผู้ดูแลระบบ' : 'ผู้ใช้ทั่วไป') + '</p>' +
-          '<div class="success-actions">' +
-            '<a class="btn btn-maroon" href="profile.html">บัญชีของฉัน</a>' +
-            '<a class="btn btn-ghost" href="bookings.html">ประวัติการจอง</a>' +
-            (sessionUser.role === 'admin' ? '<a class="btn btn-ghost" href="admin.html">หน้าแอดมิน</a>' : '') +
-          '</div>';
-      }
+      card.innerHTML = '' +
+        '<p class="eyebrow">เข้าสู่ระบบอยู่แล้ว</p>' +
+        '<h2 class="display display-sm auth-signed-title">' + esc(String(sessionUser.name || '').split(' ')[0]) + '</h2>' +
+        '<p class="auth-sub">' + esc(sessionUser.email) + ' · ' +
+          (sessionUser.role === 'admin' ? 'ผู้ดูแลระบบ' : 'ผู้ใช้ทั่วไป') + '</p>' +
+        '<div class="auth-alt auth-signed-actions">' +
+          '<a class="btn btn-maroon" href="profile.html">บัญชีของฉัน</a>' +
+          '<a class="btn btn-ghost" href="bookings.html">ประวัติการจอง</a>' +
+          (sessionUser.role === 'admin' ? '<a class="btn btn-ghost" href="admin.html">หน้าแอดมิน</a>' : '') +
+        '</div>';
       return;
     }
 
-    function setMode(mode) {
-      Array.prototype.forEach.call(tabs.querySelectorAll('[data-mode]'), function (btn) {
-        btn.classList.toggle('is-active', btn.getAttribute('data-mode') === mode);
-      });
-      if (loginForm) loginForm.hidden = mode !== 'login';
-      if (otpForm) otpForm.hidden = mode !== 'otp';
-      if (registerForm) registerForm.hidden = mode !== 'register';
-      setMsg($('login-msg'), '');
-      setMsg($('otp-msg'), '');
-      setMsg($('reg-msg'), '');
-      if (mode !== 'otp') otpReset();
-      if (mode !== 'register') regReset();
-    }
+    /* ---------- ตัวช่วยเล็ก ๆ ---------- */
 
-    function setMsg(el, text, ok) {
+    function msg(id, text, ok) {
+      var el = $(id);
       if (!el) return;
       el.textContent = text || '';
       el.className = 'form-msg' + (text ? (ok ? ' is-ok' : ' is-error') : '');
     }
 
-    tabs.addEventListener('click', function (event) {
-      var btn = event.target.closest('[data-mode]');
-      if (btn) setMode(btn.getAttribute('data-mode'));
-    });
+    function fieldError(id, text) {
+      var el = $(id);
+      if (!el) return;
+      el.textContent = text || '';
+      el.hidden = !text;
+    }
 
-    if (loginForm) {
-      loginForm.addEventListener('submit', async function (event) {
-        event.preventDefault();
-        var msg = $('login-msg');
-        var button = loginForm.querySelector('button[type="submit"]');
-        button.disabled = true;
-        button.textContent = 'กำลังเข้าสู่ระบบ...';
-        try {
-          var data = await API.post('/auth/login', {
-            email: $('login-email').value.trim(),
-            password: $('login-pass').value
-          });
-          /* ผู้ใช้ทั่วไป: ผ่านรหัสผ่านแล้วยังไม่ได้ session ต้องยืนยัน OTP ทางอีเมลก่อน */
-          if (data.otpRequired) {
-            button.disabled = false;
-            button.textContent = 'เข้าสู่ระบบด้วยรหัสผ่าน';
-            setMode('otp');
-            otpToCode(data.email, data, 'รหัสผ่านถูกต้อง — กรอกรหัส 6 หลักจากอีเมลเพื่อยืนยันตัวตน');
-            return;
-          }
-          API.setToken(data.token);
-          setMsg(msg, 'เข้าสู่ระบบสำเร็จ กำลังเปิดหน้าบัญชี...', true);
-          setFlash('เข้าสู่ระบบสำเร็จ');
-          goNext('profile.html');
-        } catch (err) {
-          setMsg(msg, err.message);
-          button.disabled = false;
-          button.textContent = 'เข้าสู่ระบบ';
-        }
+    function maskEmail(email) {
+      var at = String(email || '').indexOf('@');
+      if (at < 1) return String(email || '');
+      return email.slice(0, Math.min(2, at)) + '•••' + email.slice(at);
+    }
+
+    function copyFor(mode) {
+      if (mode === 'otp') return { kicker: 'ยืนยันตัวตน', title: 'กรอกรหัส 6 หลัก', sub: 'รหัสใช้ได้ครั้งเดียวและหมดอายุใน 10 นาที' };
+      if (mode === 'password') return { kicker: 'เข้าสู่ระบบ', title: 'ด้วยรหัสผ่าน', sub: 'ผู้ดูแลระบบเข้าได้ทันที ผู้ใช้ทั่วไปต้องยืนยัน OTP จากอีเมลอีกขั้น' };
+      if (mode === 'signup') return { kicker: 'ขั้นสุดท้าย', title: 'ตั้งค่าบัญชี', sub: 'ตั้งรหัสผ่านและข้อมูลพื้นฐานเพื่อเริ่มใช้งาน' };
+      if (state.intent === 'signup') return { kicker: 'สมัครสมาชิก', title: 'เริ่มจากอีเมล', sub: 'กรอกชื่อและอีเมล แล้วยืนยันด้วยรหัส 6 หลักจากอีเมล' };
+      return { kicker: 'เข้าสู่ระบบ', title: 'อีเมลของคุณ', sub: 'เราจะส่งรหัส 6 หลักไปให้ — ไม่ต้องจำรหัสผ่าน' };
+    }
+
+    function paintSteps(mode) {
+      if (!steps) return;
+      steps.hidden = mode === 'password';
+      var signup = state.intent === 'signup';
+      var current = mode === 'otp' ? 2 : (mode === 'signup' ? 3 : 1);
+      Array.prototype.forEach.call(steps.querySelectorAll('[data-step]'), function (li) {
+        var step = Number(li.getAttribute('data-step'));
+        li.hidden = step === 3 && !signup;
+        li.classList.toggle('is-current', step === current);
+        li.classList.toggle('is-done', step < current);
       });
     }
 
-    function otpReset() {
-      otpStage = 'email';
-      otpEmail = '';
-      if (otpTimer) { window.clearInterval(otpTimer); otpTimer = null; }
-      if (!otpForm) return;
-      $('otp-code-field').hidden = true;
-      $('otp-actions').hidden = true;
-      $('otp-hint').hidden = true;
-      $('otp-hint').textContent = '';
-      $('otp-email').readOnly = false;
-      $('otp-code').value = '';
-      $('otp-submit').textContent = 'ส่งรหัส OTP';
-      $('otp-submit').disabled = false;
-      setMsg($('otp-msg'), '');
+    function showPane(mode) {
+      state.mode = mode;
+      Array.prototype.forEach.call(panes, function (pane) {
+        pane.hidden = pane.getAttribute('data-pane') !== mode;
+      });
+      var copy = copyFor(mode);
+      if (kicker) kicker.textContent = copy.kicker;
+      if (title) title.textContent = copy.title;
+      if (sub) sub.textContent = copy.sub;
+      if (mode !== 'otp') stopResend();
+      if (mode === 'email') {
+        $('auth-name-field').hidden = state.intent !== 'signup';
+        $('email-submit').textContent = state.intent === 'signup' ? 'รับรหัสเพื่อสมัคร' : 'รับรหัสทางอีเมล';
+      }
+      if (mode === 'password' && !$('pw-email').value) {
+        $('pw-email').value = state.email || $('auth-email').value.trim();
+      }
+      paintSteps(mode);
     }
 
-    function otpCountdown(seconds) {
+    function finish(token, flashText) {
+      API.setToken(token);
+      stopResend();
+      setFlash(flashText);
+      goNext('profile.html');
+    }
+
+    /* ---------- OTP 6 ช่อง ---------- */
+
+    function otpValue() {
+      return otpBoxes.map(function (box) { return box.value.replace(/\D/g, ''); }).join('');
+    }
+
+    function syncOtp() {
+      var value = otpValue();
+      $('otp-submit').disabled = value.length !== 6;
+      return value;
+    }
+
+    function clearOtp() {
+      otpBoxes.forEach(function (box) {
+        box.value = '';
+        box.classList.remove('is-filled');
+      });
+      syncOtp();
+    }
+
+    function stopResend() {
+      if (state.resendTimer) {
+        window.clearInterval(state.resendTimer);
+        state.resendTimer = null;
+      }
+    }
+
+    function startResend(seconds) {
+      stopResend();
       var button = $('otp-resend');
+      if (!button) return;
       var left = Math.max(0, Number(seconds) || 60);
-      if (otpTimer) window.clearInterval(otpTimer);
       function paint() {
-        button.textContent = left > 0 ? 'ส่งรหัสใหม่ (' + left + ')' : 'ส่งรหัสใหม่';
         button.disabled = left > 0;
+        button.textContent = left > 0 ? 'ส่งรหัสใหม่ (' + left + ')' : 'ส่งรหัสใหม่';
       }
       paint();
-      otpTimer = window.setInterval(function () {
+      state.resendTimer = window.setInterval(function () {
         left -= 1;
         paint();
-        if (left <= 0) { window.clearInterval(otpTimer); otpTimer = null; }
+        if (left <= 0) stopResend();
       }, 1000);
     }
 
-    function regReset() {
-      regStage = 'form';
-      regEmail = '';
-      if (regTimer) { window.clearInterval(regTimer); regTimer = null; }
-      if (!registerForm) return;
-      $('reg-code-field').hidden = true;
-      $('reg-actions').hidden = true;
-      $('reg-hint').hidden = true;
-      $('reg-hint').textContent = '';
-      $('reg-email').readOnly = false;
-      $('reg-code').value = '';
-      $('reg-submit').textContent = 'รับรหัส OTP ทางอีเมล';
-      $('reg-submit').disabled = false;
-      $('reg-resend').disabled = true;
-      $('reg-resend').textContent = 'ส่งรหัสใหม่';
-      setMsg($('reg-msg'), '');
-    }
+    function openOtp(sent, lead) {
+      state.back = state.mode === 'password' ? 'password' : 'email';
+      if (sent && sent.email) state.email = sent.email;
+      $('otp-masked').textContent = maskEmail(state.email);
+      clearOtp();
+      msg('otp-msg', lead || '', !!lead);
 
-    function regCountdown(seconds) {
-      var button = $('reg-resend');
-      var left = Math.max(0, Number(seconds) || 60);
-      if (regTimer) window.clearInterval(regTimer);
-      function paint() {
-        button.textContent = left > 0 ? 'ส่งรหัสใหม่ (' + left + ')' : 'ส่งรหัสใหม่';
-        button.disabled = left > 0;
-      }
-      paint();
-      regTimer = window.setInterval(function () {
-        left -= 1;
-        paint();
-        if (left <= 0) { window.clearInterval(regTimer); regTimer = null; }
-      }, 1000);
-    }
-
-    /* แสดงช่องกรอกรหัสหลังส่ง OTP สำเร็จ (ใช้ทั้งแท็บ OTP และการล็อกอินด้วยรหัสผ่าน) */
-    function otpToCode(email, sent, lead) {
-      otpEmail = email;
-      otpStage = 'code';
-      $('otp-email').value = email;
-      $('otp-email').readOnly = true;
-      $('otp-code-field').hidden = false;
-      $('otp-actions').hidden = false;
-      $('otp-code').value = '';
-      $('otp-submit').disabled = false;
-      $('otp-submit').textContent = 'ยืนยันและเข้าสู่ระบบ';
-      $('otp-code').focus();
-      otpCountdown(sent.resendIn || 60);
       var hint = $('otp-hint');
-      if (sent.devCode) {
+      if (sent && sent.devCode) {
         hint.hidden = false;
         hint.textContent = 'โหมดพัฒนา (ยังไม่ตั้งค่าผู้ให้บริการอีเมล): รหัสของคุณคือ ' + sent.devCode;
-      } else if (sent.delivered) {
+      } else if (sent && sent.delivered) {
         hint.hidden = false;
-        hint.textContent = 'ส่งรหัส 6 หลักไปที่ ' + email + ' แล้ว · ใช้ได้ภายใน ' + Math.round((sent.expiresIn || 600) / 60) + ' นาที';
+        hint.textContent = 'ส่งรหัส 6 หลักไปที่ ' + state.email + ' แล้ว · ใช้ได้ภายใน ' +
+          Math.round((sent.expiresIn || 600) / 60) + ' นาที';
       } else {
         hint.hidden = true;
+        hint.textContent = '';
       }
-      setMsg($('otp-msg'), lead, true);
+
+      showPane('otp');
+      startResend(sent && sent.resendIn ? sent.resendIn : 60);
+      if (otpBoxes[0]) otpBoxes[0].focus();
     }
 
-    if (otpForm) {
-      otpForm.addEventListener('submit', async function (event) {
-        event.preventDefault();
-        var msg = $('otp-msg');
-        var submit = $('otp-submit');
+    if (otpBoxes.length) {
+      otpBoxes.forEach(function (box, index) {
+        box.addEventListener('input', function () {
+          box.value = box.value.replace(/\D/g, '').slice(-1);
+          box.classList.toggle('is-filled', !!box.value);
+          if (box.value && index < otpBoxes.length - 1) otpBoxes[index + 1].focus();
+          syncOtp();
+        });
 
-        if (otpStage === 'email') {
-          var email = $('otp-email').value.trim();
-          if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { setMsg(msg, 'รูปแบบอีเมลไม่ถูกต้อง'); return; }
-          submit.disabled = true;
-          submit.textContent = 'กำลังส่งรหัส...';
-          try {
-            var sent = await API.post('/auth/otp/request', { email: email });
-            otpToCode(email, sent, 'ถ้าไม่เห็นอีเมล ให้ตรวจถังสแปมหรือกด "ส่งรหัสใหม่"');
-          } catch (err) {
-            setMsg(msg, err.message);
-            submit.disabled = false;
-            submit.textContent = 'ส่งรหัส OTP';
+        box.addEventListener('keydown', function (event) {
+          if (event.key === 'Backspace' && !box.value && index > 0) {
+            event.preventDefault();
+            otpBoxes[index - 1].value = '';
+            otpBoxes[index - 1].classList.remove('is-filled');
+            otpBoxes[index - 1].focus();
+            syncOtp();
+          } else if (event.key === 'ArrowLeft' && index > 0) {
+            event.preventDefault();
+            otpBoxes[index - 1].focus();
+          } else if (event.key === 'ArrowRight' && index < otpBoxes.length - 1) {
+            event.preventDefault();
+            otpBoxes[index + 1].focus();
           }
+        });
+
+        box.addEventListener('paste', function (event) {
+          var clip = event.clipboardData || window.clipboardData;
+          var digits = String((clip && clip.getData('text')) || '').replace(/\D/g, '').slice(0, otpBoxes.length);
+          if (!digits) return;
+          event.preventDefault();
+          otpBoxes.forEach(function (target, i) {
+            target.value = digits[i] || '';
+            target.classList.toggle('is-filled', !!target.value);
+          });
+          otpBoxes[Math.min(digits.length, otpBoxes.length - 1)].focus();
+          syncOtp();
+        });
+      });
+    }
+
+    /* ---------- ขั้นที่ 1: อีเมล ---------- */
+
+    function startSignup(email) {
+      state.intent = 'signup';
+      fieldError('auth-email-error', '');
+      fieldError('auth-name-error', '');
+      if (email) $('auth-email').value = email;
+      showPane('email');
+      $('auth-name').focus();
+    }
+
+    $('email-form').addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var nameEl = $('auth-name');
+      var emailEl = $('auth-email');
+      var button = $('email-submit');
+      var signup = state.intent === 'signup';
+      var email = emailEl.value.trim();
+      var name = nameEl.value.trim();
+
+      fieldError('auth-email-error', '');
+      fieldError('auth-name-error', '');
+      msg('email-msg', '');
+
+      if (signup && name.length < 2) {
+        fieldError('auth-name-error', 'กรอกชื่ออย่างน้อย 2 ตัวอักษร');
+        nameEl.focus();
+        return;
+      }
+      if (!EMAIL_RE.test(email)) {
+        fieldError('auth-email-error', 'รูปแบบอีเมลไม่ถูกต้อง');
+        emailEl.focus();
+        return;
+      }
+
+      state.email = email;
+      if (signup) state.name = name;
+      button.disabled = true;
+      button.textContent = 'กำลังส่งรหัส...';
+
+      try {
+        var payload = { email: email };
+        if (signup) {
+          payload.purpose = 'signup';
+          payload.name = name;
+        }
+        var sent = await API.post('/auth/otp/request', payload);
+        openOtp(sent, signup
+          ? 'กรอกรหัสจากอีเมลเพื่อยืนยันว่าเป็นอีเมลของคุณ'
+          : 'ถ้าไม่เห็นอีเมล ให้ตรวจถังสแปมหรือกด "ส่งรหัสใหม่"');
+      } catch (err) {
+        if (!signup && err.status === 404) {
+          startSignup(email);
+          msg('email-msg', 'อีเมลนี้ยังไม่มีบัญชี — กรอกชื่อเพื่อสมัครสมาชิก');
+          return;
+        }
+        msg('email-msg', err.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = state.intent === 'signup' ? 'รับรหัสเพื่อสมัคร' : 'รับรหัสทางอีเมล';
+      }
+    });
+
+    $('to-signup').addEventListener('click', function () {
+      startSignup($('auth-email').value.trim());
+    });
+
+    $('to-password').addEventListener('click', function () {
+      state.email = $('auth-email').value.trim() || state.email;
+      msg('pw-msg', '');
+      showPane('password');
+      $('pw-pass').focus();
+    });
+
+    /* ---------- ขั้นที่ 2: OTP ---------- */
+
+    $('otp-form').addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var button = $('otp-submit');
+      var code = otpValue();
+      msg('otp-msg', '');
+      if (code.length !== 6) {
+        msg('otp-msg', 'กรอกรหัส 6 หลักจากอีเมล');
+        return;
+      }
+
+      button.disabled = true;
+      button.textContent = 'กำลังยืนยัน...';
+      try {
+        var data = await API.post('/auth/otp/verify', {
+          email: state.email,
+          code: code,
+          purpose: state.intent
+        });
+
+        if (state.intent === 'signup') {
+          state.signupToken = data.signupToken || '';
+          $('signup-email').textContent = state.email;
+          $('sg-pass').value = '';
+          $('sg-pass2').value = '';
+          $('sg-phone').value = '';
+          fieldError('sg-pass-error', '');
+          fieldError('sg-pass2-error', '');
+          fieldError('sg-age-error', '');
+          msg('sg-msg', '');
+          showPane('signup');
+          $('sg-pass').focus();
           return;
         }
 
-        var code = $('otp-code').value.replace(/\s+/g, '');
-        if (!/^\d{6}$/.test(code)) { setMsg(msg, 'กรอกรหัส 6 หลักจากอีเมล'); return; }
-        submit.disabled = true;
-        submit.textContent = 'กำลังยืนยัน...';
-        try {
-          var data = await API.post('/auth/otp/verify', { email: otpEmail, code: code });
-          API.setToken(data.token);
-          if (otpTimer) { window.clearInterval(otpTimer); otpTimer = null; }
-          setMsg(msg, 'ยืนยันสำเร็จ กำลังเปิดหน้าบัญชี...', true);
-          setFlash('เข้าสู่ระบบสำเร็จ');
-          goNext('profile.html');
-        } catch (err) {
-          setMsg(msg, err.message);
-          submit.disabled = false;
-          submit.textContent = 'ยืนยันและเข้าสู่ระบบ';
+        finish(data.token, 'เข้าสู่ระบบสำเร็จ');
+      } catch (err) {
+        msg('otp-msg', err.message);
+        clearOtp();
+        if (otpBoxes[0]) otpBoxes[0].focus();
+      } finally {
+        button.textContent = 'ยืนยันและเข้าสู่ระบบ';
+        syncOtp();
+      }
+    });
+
+    $('otp-back').addEventListener('click', function () {
+      stopResend();
+      clearOtp();
+      msg('otp-msg', '');
+      showPane(state.back);
+      if (state.back === 'email') $('auth-email').focus();
+    });
+
+    $('otp-change').addEventListener('click', function () {
+      stopResend();
+      clearOtp();
+      msg('otp-msg', '');
+      showPane('email');
+      $('auth-email').focus();
+    });
+
+    $('otp-resend').addEventListener('click', async function () {
+      var button = $('otp-resend');
+      button.disabled = true;
+      msg('otp-msg', '');
+      try {
+        var payload = { email: state.email };
+        if (state.intent === 'signup') {
+          payload.purpose = 'signup';
+          payload.name = state.name;
         }
-      });
-
-      $('otp-back').addEventListener('click', otpReset);
-
-      $('otp-resend').addEventListener('click', async function () {
-        $('otp-resend').disabled = true;
-        try {
-          var sent = await API.post('/auth/otp/request', { email: otpEmail });
-          setMsg($('otp-msg'), 'ส่งรหัสใหม่แล้ว', true);
-          if (sent.devCode) {
-            $('otp-hint').hidden = false;
-            $('otp-hint').textContent = 'โหมดพัฒนา: รหัสของคุณคือ ' + sent.devCode;
-          }
-          otpCountdown(sent.resendIn || 60);
-        } catch (err) {
-          setMsg($('otp-msg'), err.message);
-          otpCountdown(15);
+        var sent = await API.post('/auth/otp/request', payload);
+        msg('otp-msg', 'ส่งรหัสใหม่แล้ว', true);
+        var hint = $('otp-hint');
+        if (sent.devCode) {
+          hint.hidden = false;
+          hint.textContent = 'โหมดพัฒนา: รหัสของคุณคือ ' + sent.devCode;
         }
-      });
-    }
+        startResend(sent.resendIn || 60);
+      } catch (err) {
+        msg('otp-msg', err.message);
+        startResend(15);
+      }
+    });
 
-    if (registerForm) {
-      registerForm.addEventListener('submit', async function (event) {
-        event.preventDefault();
-        var msg = $('reg-msg');
-        var name = $('reg-name').value.trim();
-        var email = $('reg-email').value.trim();
-        var password = $('reg-pass').value;
-        var confirmPass = $('reg-pass2').value;
-        var age = Number($('reg-age').value);
-        var submit = $('reg-submit');
+    /* ---------- รหัสผ่าน (ทางเลือกสำรอง) ---------- */
 
-        /* ขั้นที่ 1: ตรวจข้อมูลในฟอร์มแล้วขอรหัสยืนยันทางอีเมล (ยังไม่สร้างบัญชี) */
-        if (regStage === 'form') {
-          if (name.length < 2) { setMsg(msg, 'กรุณากรอกชื่ออย่างน้อย 2 ตัวอักษร'); return; }
-          if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { setMsg(msg, 'รูปแบบอีเมลไม่ถูกต้อง'); return; }
-          if (password.length < 6) { setMsg(msg, 'รหัสผ่านต้องอย่างน้อย 6 ตัวอักษร'); return; }
-          if (password !== confirmPass) { setMsg(msg, 'รหัสผ่านทั้งสองช่องไม่ตรงกัน'); return; }
-          if (!(age >= 15)) { setMsg(msg, 'FLO-RENT เปิดให้ผู้ใช้อายุ 15 ปีขึ้นไป'); return; }
+    $('password-form').addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var email = $('pw-email').value.trim();
+      var password = $('pw-pass').value;
+      var button = $('pw-submit');
+      msg('pw-msg', '');
 
-          submit.disabled = true;
-          submit.textContent = 'กำลังส่งรหัส...';
-          try {
-            var sent = await API.post('/auth/otp/request', { email: email, purpose: 'signup', name: name });
-            regStage = 'code';
-            regEmail = email;
-            $('reg-email').readOnly = true;
-            $('reg-code-field').hidden = false;
-            $('reg-actions').hidden = false;
-            $('reg-code').value = '';
-            submit.disabled = false;
-            submit.textContent = 'ยืนยันอีเมลและสมัครสมาชิก';
-            $('reg-code').focus();
-            regCountdown(sent.resendIn || 60);
-            var hint = $('reg-hint');
-            if (sent.devCode) {
-              hint.hidden = false;
-              hint.textContent = 'โหมดพัฒนา (ยังไม่ตั้งค่าผู้ให้บริการอีเมล): รหัสของคุณคือ ' + sent.devCode;
-            } else if (sent.delivered) {
-              hint.hidden = false;
-              hint.textContent = 'ส่งรหัส 6 หลักไปที่ ' + email + ' แล้ว · ใช้ได้ภายใน ' + Math.round((sent.expiresIn || 600) / 60) + ' นาที';
-            } else {
-              hint.hidden = true;
-            }
-            setMsg(msg, 'กรอกรหัสจากอีเมลเพื่อยืนยันว่าเป็นอีเมลของคุณ', true);
-          } catch (err) {
-            setMsg(msg, err.message);
-            submit.disabled = false;
-            submit.textContent = 'รับรหัส OTP ทางอีเมล';
-          }
+      if (!EMAIL_RE.test(email)) {
+        msg('pw-msg', 'รูปแบบอีเมลไม่ถูกต้อง');
+        $('pw-email').focus();
+        return;
+      }
+      if (!password) {
+        msg('pw-msg', 'กรอกรหัสผ่าน');
+        $('pw-pass').focus();
+        return;
+      }
+
+      state.email = email;
+      button.disabled = true;
+      button.textContent = 'กำลังตรวจสอบ...';
+      try {
+        var data = await API.post('/auth/login', { email: email, password: password });
+        if (data.otpRequired) {
+          state.intent = 'login';
+          openOtp(data, 'รหัสผ่านถูกต้อง — กรอกรหัส 6 หลักจากอีเมลเพื่อยืนยันตัวตน');
           return;
         }
+        finish(data.token, 'เข้าสู่ระบบสำเร็จ');
+      } catch (err) {
+        msg('pw-msg', err.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = 'เข้าสู่ระบบด้วยรหัสผ่าน';
+      }
+    });
 
-        /* ขั้นที่ 2: ยืนยันรหัส → ได้ signupToken → สร้างบัญชีและเข้าสู่ระบบทันที */
-        var code = $('reg-code').value.replace(/\s+/g, '');
-        if (!/^\d{6}$/.test(code)) { setMsg(msg, 'กรอกรหัส 6 หลักจากอีเมล'); return; }
-        submit.disabled = true;
-        submit.textContent = 'กำลังยืนยันอีเมล...';
-        try {
-          var verified = await API.post('/auth/otp/verify', { email: regEmail, code: code, purpose: 'signup' });
-          submit.textContent = 'กำลังสมัคร...';
-          var data = await API.post('/auth/register', {
-            name: name,
-            email: regEmail,
-            password: password,
-            age: age,
-            phone: $('reg-phone').value.trim(),
-            signupToken: verified.signupToken
-          });
-          API.setToken(data.token);
-          setMsg(msg, 'ยืนยันอีเมลและสมัครสมาชิกสำเร็จ กำลังเปิดหน้าบัญชี...', true);
-          setFlash('สมัครสมาชิกสำเร็จ — ยินดีต้อนรับ');
-          goNext('profile.html');
-        } catch (err) {
-          setMsg(msg, err.message);
-          submit.disabled = false;
-          submit.textContent = 'ยืนยันอีเมลและสมัครสมาชิก';
-        }
-      });
+    $('pw-back').addEventListener('click', function () {
+      msg('pw-msg', '');
+      showPane('email');
+      $('auth-email').focus();
+    });
 
-      $('reg-back').addEventListener('click', regReset);
+    /* ลืมรหัสผ่าน: ระบบไม่มี endpoint รีเซ็ต — ใช้ทางเข้า OTP ทางอีเมลแทนได้ทันที */
+    $('pw-forgot').addEventListener('click', function () {
+      state.intent = 'login';
+      msg('pw-msg', '');
+      showPane('email');
+      msg('email-msg', 'ลืมรหัสผ่านไม่เป็นไร — ใส่อีเมลแล้วรับรหัส 6 หลักเพื่อเข้าสู่ระบบได้เลย', true);
+      $('auth-email').focus();
+    });
 
-      $('reg-resend').addEventListener('click', async function () {
-        $('reg-resend').disabled = true;
-        try {
-          var sent = await API.post('/auth/otp/request', {
-            email: regEmail, purpose: 'signup', name: $('reg-name').value.trim()
-          });
-          setMsg($('reg-msg'), 'ส่งรหัสใหม่แล้ว', true);
-          if (sent.devCode) {
-            $('reg-hint').hidden = false;
-            $('reg-hint').textContent = 'โหมดพัฒนา: รหัสของคุณคือ ' + sent.devCode;
-          }
-          regCountdown(sent.resendIn || 60);
-        } catch (err) {
-          setMsg($('reg-msg'), err.message);
-          regCountdown(15);
-        }
+    function wireToggle(buttonId, inputId) {
+      var button = $(buttonId);
+      var input = $(inputId);
+      if (!button || !input) return;
+      button.addEventListener('click', function () {
+        var show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        button.textContent = show ? 'ซ่อน' : 'แสดง';
+        button.setAttribute('aria-label', show ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน');
       });
     }
 
-    setMode('otp');
+    wireToggle('pw-toggle', 'pw-pass');
+    wireToggle('sg-toggle', 'sg-pass');
+
+    /* ---------- ขั้นที่ 3: ตั้งค่าบัญชีหลังยืนยันอีเมล ---------- */
+
+    $('signup-form').addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var password = $('sg-pass').value;
+      var confirm = $('sg-pass2').value;
+      var age = Number($('sg-age').value);
+      var button = $('sg-submit');
+
+      msg('sg-msg', '');
+      fieldError('sg-pass-error', '');
+      fieldError('sg-pass2-error', '');
+      fieldError('sg-age-error', '');
+
+      if (password.length < 6) {
+        fieldError('sg-pass-error', 'รหัสผ่านอย่างน้อย 6 ตัวอักษร');
+        $('sg-pass').focus();
+        return;
+      }
+      if (password !== confirm) {
+        fieldError('sg-pass2-error', 'รหัสผ่านทั้งสองช่องไม่ตรงกัน');
+        $('sg-pass2').focus();
+        return;
+      }
+      if (!(age >= 15)) {
+        fieldError('sg-age-error', 'FLO-RENT เปิดให้ผู้ใช้อายุ 15 ปีขึ้นไป');
+        $('sg-age').focus();
+        return;
+      }
+      if (!state.signupToken) {
+        msg('sg-msg', 'การยืนยันอีเมลหมดอายุแล้ว — เริ่มสมัครใหม่อีกครั้ง');
+        showPane('email');
+        return;
+      }
+
+      button.disabled = true;
+      button.textContent = 'กำลังสร้างบัญชี...';
+      try {
+        var data = await API.post('/auth/register', {
+          name: state.name,
+          email: state.email,
+          password: password,
+          age: age,
+          phone: $('sg-phone').value.trim(),
+          signupToken: state.signupToken
+        });
+        finish(data.token, 'สมัครสมาชิกสำเร็จ — ยินดีต้อนรับ');
+      } catch (err) {
+        msg('sg-msg', err.message);
+        button.disabled = false;
+        button.textContent = 'สร้างบัญชีและเข้าสู่ระบบ';
+      }
+    });
+
+    $('sg-back').addEventListener('click', function () {
+      state.intent = 'signup';
+      state.signupToken = '';
+      msg('sg-msg', '');
+      showPane('email');
+      $('auth-email').focus();
+    });
+
+    showPane('email');
   }
 
   /* ---------- โปรไฟล์ ---------- */
