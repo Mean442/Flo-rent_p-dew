@@ -1000,7 +1000,7 @@ async function handleApi(req, res, url) {
       })[0]
       : null;
     if (!signupRecord || signupRecord.email !== email) {
-      fail(401, 'ต้องยืนยันอีเมลก่อนสมัครสมาชิก — กด "รับรหัส OTP ทางอีเมล" แล้วกรอกรหัส 6 หลักจากอีเมล');
+      fail(401, 'ต้องยืนยันอีเมลก่อนสมัครสมาชิก — กด "รับรหัสเพื่อสมัคร" แล้วกรอกรหัส 6 หลักจากอีเมล');
     }
 
     const user = {
@@ -1074,17 +1074,28 @@ async function handleApi(req, res, url) {
   /* ขอ OTP: สร้างรหัส 6 หลัก ส่งทางอีเมล เก็บเฉพาะ hash ไว้ในฐานข้อมูล */
   if (key === 'POST /api/auth/otp/request') {
     if (!allowAttempt(req, 'otp-request')) fail(429, 'ขอยืนยันหลายครั้งเกินไป กรุณารอสักครู่');
-    if (otpUnavailable()) fail(503, 'ระบบส่งอีเมล OTP ยังไม่ถูกตั้งค่า — กรุณาติดต่อผู้ดูแลระบบ');
     const payload = await readBody(req);
     const purpose = payload.purpose === 'signup' || payload.purpose === 'reset' ? payload.purpose : 'login';
     const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) fail(400, 'รูปแบบอีเมลไม่ถูกต้อง');
 
+    /* บัญชีทดลองถูกปิดบน production ทุกทาง ไม่ใช่แค่ทางรหัสผ่าน — ตรวจก่อนเรื่องการตั้งค่าอีเมล
+       เพื่อให้คนที่ใช้บัญชีทดลองเห็นสาเหตุที่ถูกต้อง ไม่ใช่ 503 ที่ชวนให้เข้าใจผิด */
+    if (!DEMO_MODE && DEMO_EMAILS.indexOf(email) !== -1) {
+      fail(403, 'บัญชีทดลองถูกปิดบน production — เข้าสู่ระบบด้วยบัญชีที่สมัครเอง');
+    }
+
+    if (otpUnavailable()) fail(503, 'ระบบส่งอีเมล OTP ยังไม่ถูกตั้งค่า — กรุณาติดต่อผู้ดูแลระบบ');
+
     const user = findUserByEmail(email);
     if (purpose === 'signup') {
-      if (user) fail(409, 'อีเมลนี้มีบัญชีอยู่แล้ว — เข้าสู่ระบบด้วยแท็บ "อีเมล OTP" ได้เลย');
+      if (user) fail(409, 'อีเมลนี้มีบัญชีอยู่แล้ว — เข้าสู่ระบบด้วยอีเมลนี้ได้เลย');
     } else {
-      if (!user) fail(404, 'ไม่พบบัญชีที่ใช้อีเมลนี้ — สมัครสมาชิกก่อนใช้การเข้าสู่ระบบด้วย OTP');
+      if (!user) {
+        fail(404, purpose === 'reset'
+          ? 'ไม่พบบัญชีที่ใช้อีเมลนี้ — ตรวจอีเมลอีกครั้ง หรือสมัครสมาชิกก่อน'
+          : 'ไม่พบบัญชีที่ใช้อีเมลนี้ — สมัครสมาชิกก่อนใช้การเข้าสู่ระบบด้วย OTP');
+      }
       if (user.status !== 'active') fail(403, 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อทีมงาน');
     }
 
@@ -1298,7 +1309,7 @@ async function handleApi(req, res, url) {
     const payload = await readBody(req);
     const cat = asEnum(String(payload.cat || ''), 'หมวดหมู่', categoryKeys());
     const item = {
-      id: auth.newId('usr'),
+      id: auth.newId('itm'),
       ownerId: user.id,
       owner: user.name,
       cat: cat,

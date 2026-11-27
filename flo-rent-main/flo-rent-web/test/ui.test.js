@@ -66,3 +66,14 @@ test('flow การจองและการยืนยันตัวตน
   assert.match(app, /if \(!sessionUser\) \{\s*requireLogin\(\);/);
   assert.match(app, /showVerifyNeeded\(err, \$\('booking-card'\)\)/);
 });
+
+test('ข้อความในหน้าเว็บไม่มี placeholder ว่างหรือคำผิดหลงเหลือ', function () {
+  ['index.html', 'browse.html'].forEach(function (file) {
+    const html = fs.readFileSync(path.join(PUBLIC, file), 'utf8');
+    assert.ok(html.indexOf('placeholder="I..."') === -1, file + ' ยังมี placeholder "I..."');
+    assert.match(html, /placeholder="ค้นหา/, file + ' ต้องมี placeholder ที่บอกสิ่งที่พิมพ์ได้');
+  });
+  const browse = fs.readFileSync(path.join(PUBLIC, 'browse.html'), 'utf8');
+  assert.ok(browse.indexOf('ของใช้คอนออกกอง') === -1, 'ยังมีคำผิด "คอนออกกอง"');
+  assert.ok(browse.indexOf('ของใช้คนออกกอง') !== -1, 'ต้องมีลิงก์หมวด "ของใช้คนออกกอง"');
+});

@@ -588,3 +588,15 @@ test('ลืมรหัสผ่าน: อีเมลที่ไม่มี
   assert.strictEqual(asLogin.status, 401, 'รหัสของ reset ต้องใช้ยืนยันแบบ login ไม่ได้');
   assert.ok(!asLogin.body.token);
 });
+
+/* ---------- 4. รูปแบบ id ของประกาศ ---------- */
+
+test('ประกาศใหม่ได้ id ขึ้นต้นด้วย itm- ไม่ใช่ usr- ที่อ่านเหมือน id ผู้ใช้', async function () {
+  const owner = await register('เจ้าของทดสอบ id', 'idprefix-' + Date.now() + '@example.com');
+  const res = await api('POST', '/api/items', {
+    title: 'ทดสอบรูปแบบ id', cat: 'crew', price: 50, deposit: 0
+  }, { token: owner.token });
+  assert.strictEqual(res.status, 201, res.text);
+  assert.match(res.body.item.id, /^itm-[a-z0-9]+$/, 'id ประกาศต้องขึ้นต้นด้วย itm-');
+  assert.ok(res.body.item.id.indexOf('usr-') !== 0, 'id ประกาศต้องไม่ขึ้นต้นด้วย usr-');
+});

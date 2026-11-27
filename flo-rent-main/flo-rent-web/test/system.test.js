@@ -930,3 +930,61 @@ test('production: FLO_SEED_CATALOG=0 ปิดแคตตาล็อกได�
     await stopProductionServer(started, dir);
   }
 });
+
+test('production ที่ยังไม่ตั้งค่าอีเมล: OTP ทุกทางตอบ 503, บัญชีทดลองถูกปิด, แอดมินยังเข้าได้', async function () {
+  const auth = require('../server/auth');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'flo-rent-nomail-'));
+  const data = productionDb([]);
+  /* productionDb ใส่ hash หลอกไว้ให้เทสต์อื่น — เคสนี้ต้องล็อกอินแอดมินจริง เลยตั้ง hash ให้ตรงกับ env */
+  data.users[0].passHash = auth.hashPassword('strong-admin-pass-1234');
+  data.users.push({
+    id: 'u-normal', name: 'ผู้ใช้ปกติ', email: 'normal@example.com',
+    passHash: auth.hashPassword('userpass123'), role: 'user', status: 'active',
+    wallet: 0, credit: 90, joinedAt: new Date().toISOString()
+  });
+  fs.writeFileSync(path.join(dir, 'db.json'), JSON.stringify(data), 'utf8');
+
+  const started = await startProductionServer({
+    FLO_DATA_DIR: dir,
+    BREVO_API_KEY: '',
+    RESEND_API_KEY: '',
+    FLO_MAIL_FROM: '',
+    FLO_ADMIN_EMAIL: 'owner@example.com',
+    FLO_ADMIN_PASSWORD: 'strong-admin-pass-1234'
+  });
+
+  const post = function (urlPath, body) {
+    return fetch(started.base + urlPath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(async function (response) {
+      return { status: response.status, body: await response.json().catch(function () { return null; }) };
+    });
+  };
+
+  try {
+    const health = await (await fetch(started.base + '/api/health')).json();
+    assert.strictEqual(health.mail, 'none', 'ยังไม่ได้ตั้งค่าผู้ให้บริการอีเมล');
+
+    for (const purpose of ['login', 'signup', 'reset']) {
+      const asked = await post('/api/auth/otp/request', { email: 'normal@example.com', purpose: purpose });
+      assert.strictEqual(asked.status, 503, 'purpose ' + purpose + ' ต้องไม่ส่งรหัสออกไป');
+      assert.match(String(asked.body.error), /ยังไม่ถูกตั้งค่า/, 'ต้องบอกสาเหตุว่ายังไม่ได้ตั้งค่า');
+    }
+
+    const demo = await post('/api/auth/otp/request', { email: 'demo@flo-rent.co' });
+    assert.strictEqual(demo.status, 403, 'บัญชีทดลองต้องถูกปิดก่อนถึงขั้นตรวจการตั้งค่าอีเมล');
+
+    const userLogin = await post('/api/auth/login', { email: 'normal@example.com', password: 'userpass123' });
+    assert.strictEqual(userLogin.status, 503, 'ผู้ใช้ทั่วไปล็อกอินด้วยรหัสผ่านไม่ได้ถ้าส่ง OTP ไม่ได้');
+    assert.match(String(userLogin.body.error), /ยังไม่ถูกตั้งค่า/);
+
+    const adminLogin = await post('/api/auth/login', { email: 'owner@example.com', password: 'strong-admin-pass-1234' });
+    assert.strictEqual(adminLogin.status, 200, 'แอดมินต้องเข้าได้แม้ระบบอีเมลจะยังไม่พร้อม');
+    assert.ok(adminLogin.body.token);
+    assert.strictEqual(adminLogin.body.user.role, 'admin');
+  } finally {
+    await stopProductionServer(started, dir);
+  }
+});
