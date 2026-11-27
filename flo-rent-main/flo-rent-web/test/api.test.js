@@ -513,3 +513,78 @@ test('ล็อกอินด้วยรหัสผ่าน: บัญชี
   assert.ok(admin.body.token, 'แอดมินต้องได้ token ทันที');
   assert.strictEqual(admin.body.user.role, 'admin');
 });
+
+test('ลืมรหัสผ่าน: ยืนยัน OTP แล้วตั้งรหัสใหม่ได้จริง และ session เดิมถูกตัด', async function () {
+  const email = 'reset-flow-' + Date.now() + '@example.com';
+  const signupToken = await signupTokenFor('ผู้ใช้รีเซ็ต', email);
+  const created = await api('POST', '/api/auth/register', {
+    name: 'ผู้ใช้รีเซ็ต', email: email, password: 'oldpass123', age: 20, signupToken: signupToken
+  });
+  assert.strictEqual(created.status, 201, created.text);
+  const oldToken = created.body.token;
+
+  const requested = await api('POST', '/api/auth/otp/request', { email: email, purpose: 'reset' });
+  assert.strictEqual(requested.status, 200, requested.text);
+  assert.match(String(requested.body.devCode), /^\d{6}$/);
+
+  const wrong = await api('POST', '/api/auth/otp/verify', { email: email, code: '000000', purpose: 'reset' });
+  assert.strictEqual(wrong.status, 401, wrong.text);
+  assert.ok(!wrong.body.resetToken);
+
+  const verified = await api('POST', '/api/auth/otp/verify', { email: email, code: requested.body.devCode, purpose: 'reset' });
+  assert.strictEqual(verified.status, 200, verified.text);
+  assert.ok(verified.body.resetToken, 'ต้องได้ resetToken หลังยืนยันอีเมล');
+  assert.strictEqual(verified.body.signupToken, undefined, 'ต้องไม่ปนกับ signupToken');
+
+  const crossUse = await api('POST', '/api/auth/password/reset', {
+    email: email, password: 'newpass123', resetToken: signupToken
+  });
+  assert.strictEqual(crossUse.status, 401, 'token สมัครสมาชิกต้องใช้ตั้งรหัสผ่านใหม่ไม่ได้');
+
+  const weak = await api('POST', '/api/auth/password/reset', {
+    email: email, password: '123', resetToken: verified.body.resetToken
+  });
+  assert.strictEqual(weak.status, 400, weak.text);
+
+  const done = await api('POST', '/api/auth/password/reset', {
+    email: email, password: 'newpass123', resetToken: verified.body.resetToken
+  });
+  assert.strictEqual(done.status, 200, done.text);
+  assert.ok(done.body.token, 'ตั้งรหัสผ่านใหม่แล้วต้องได้ session ใหม่');
+
+  const meOld = await api('GET', '/api/me', undefined, { token: oldToken });
+  assert.strictEqual(meOld.status, 401, 'session เดิมต้องใช้ไม่ได้หลังเปลี่ยนรหัสผ่าน');
+
+  const loginNew = await api('POST', '/api/auth/login', { email: email, password: 'newpass123' });
+  assert.strictEqual(loginNew.status, 200, loginNew.text);
+  assert.strictEqual(loginNew.body.otpRequired, true, 'ผู้ใช้ทั่วไปยังต้องยืนยัน OTP หลังใช้รหัสผ่าน');
+
+  const loginOld = await api('POST', '/api/auth/login', { email: email, password: 'oldpass123' });
+  assert.strictEqual(loginOld.status, 401, 'รหัสผ่านเดิมต้องใช้ไม่ได้แล้ว');
+
+  const reuse = await api('POST', '/api/auth/password/reset', {
+    email: email, password: 'another123', resetToken: verified.body.resetToken
+  });
+  assert.strictEqual(reuse.status, 401, 'resetToken ใช้ซ้ำไม่ได้');
+});
+
+test('ลืมรหัสผ่าน: อีเมลที่ไม่มีบัญชีตอบ 404 และรหัสของ reset ยืนยันแบบ login ไม่ได้', async function () {
+  const missing = await api('POST', '/api/auth/otp/request', {
+    email: 'nobody-' + Date.now() + '@example.com', purpose: 'reset'
+  });
+  assert.strictEqual(missing.status, 404, missing.text);
+
+  const email = 'reset-scope-' + Date.now() + '@example.com';
+  const signupToken = await signupTokenFor('ผู้ใช้สโคป', email);
+  const created = await api('POST', '/api/auth/register', {
+    name: 'ผู้ใช้สโคป', email: email, password: 'firstpass1', age: 22, signupToken: signupToken
+  });
+  assert.strictEqual(created.status, 201, created.text);
+
+  const requested = await api('POST', '/api/auth/otp/request', { email: email, purpose: 'reset' });
+  assert.strictEqual(requested.status, 200, requested.text);
+
+  const asLogin = await api('POST', '/api/auth/otp/verify', { email: email, code: requested.body.devCode });
+  assert.strictEqual(asLogin.status, 401, 'รหัสของ reset ต้องใช้ยืนยันแบบ login ไม่ได้');
+  assert.ok(!asLogin.body.token);
+});

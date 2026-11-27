@@ -55,7 +55,7 @@
       <ol class="auth-steps" id="auth-steps" aria-label="ขั้นตอน">
         <li class="auth-step is-current" data-step="1"><span aria-hidden="true">1</span>อีเมล</li>
         <li class="auth-step" data-step="2"><span aria-hidden="true">2</span>ยืนยัน</li>
-        <li class="auth-step" data-step="3" hidden><span aria-hidden="true">3</span>บัญชี</li>
+        <li class="auth-step" data-step="3" hidden><span aria-hidden="true">3</span><b class="auth-step-text">บัญชี</b></li>
       </ol>
 
       <section class="auth-pane" data-pane="email">
@@ -78,6 +78,7 @@
 
           <div class="auth-alt">
             <button class="link-btn" type="button" id="to-password">ใช้รหัสผ่านแทน</button>
+            <button class="link-btn" type="button" id="to-reset">ลืมรหัสผ่าน?</button>
             <button class="link-btn" type="button" id="to-signup">ยังไม่มีบัญชี? สมัครสมาชิก</button>
           </div>
         </form>
@@ -178,6 +179,35 @@
 
           <div class="auth-alt">
             <button class="link-btn" type="button" id="sg-back">ย้อนกลับไปแก้อีเมล</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="auth-pane" data-pane="reset" hidden>
+        <p class="otp-who">ตั้งรหัสผ่านใหม่สำหรับ <strong id="reset-email">—</strong></p>
+
+        <form id="reset-form" class="auth-form" novalidate>
+          <label class="field">
+            <span>รหัสผ่านใหม่</span>
+            <span class="input-with-action">
+              <input type="password" id="rs-pass" autocomplete="new-password" minlength="6" placeholder="6 ตัวอักษรขึ้นไป" required>
+              <button class="input-action" type="button" id="rs-toggle" aria-label="แสดงรหัสผ่าน">แสดง</button>
+            </span>
+            <span class="field-error" id="rs-pass-error" hidden></span>
+          </label>
+
+          <label class="field">
+            <span>ยืนยันรหัสผ่านใหม่</span>
+            <input type="password" id="rs-pass2" autocomplete="new-password" minlength="6" required>
+            <span class="field-error" id="rs-pass2-error" hidden></span>
+          </label>
+
+          <p class="form-msg" id="rs-msg" role="status"></p>
+
+          <button class="btn btn-maroon btn-block" id="rs-submit" type="submit">บันทึกรหัสผ่านใหม่</button>
+
+          <div class="auth-alt">
+            <button class="link-btn" type="button" id="rs-back">กลับไปเข้าสู่ระบบ</button>
           </div>
         </form>
       </section>

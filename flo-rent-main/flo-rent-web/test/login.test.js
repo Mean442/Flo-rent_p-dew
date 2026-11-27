@@ -29,7 +29,7 @@ test('มี stepper 3 ขั้น (อีเมล → ยืนยัน → 
   assert.match(html, /data-step="2"/);
   assert.match(html, /data-step="3" hidden/);
   assert.match(app, /function paintSteps\(mode\)/);
-  assert.match(app, /li\.hidden = step === 3 && !signup/);
+  assert.match(app, /li\.hidden = step === 3 && !third/);
 });
 
 test('มี 4 pane: email, otp, password, signup — และตัวควบคุมสลับ pane', function () {
@@ -50,10 +50,23 @@ test('OTP เป็นช่อง 6 หลัก พร้อมเลื่อ
   assert.match(app, /disabled = value\.length !== 6/);
 });
 
-test('ลืมรหัสผ่านพาไปทางเข้า OTP ทางอีเมล (ไม่มี endpoint รีเซ็ตฝั่งเซิร์ฟเวอร์)', function () {
+test('ลืมรหัสผ่านตั้งรหัสใหม่ได้จริง: ขอ OTP → ยืนยัน → ตั้งรหัสผ่านใหม่', function () {
   assert.match(html, /id="pw-forgot"/);
-  assert.match(app, /\$\('pw-forgot'\)\.addEventListener\('click'/);
-  assert.match(app, /ลืมรหัสผ่านไม่เป็นไร/);
+  assert.match(html, /id="to-reset"/);
+  assert.match(html, /data-pane="reset"/);
+  assert.match(html, /id="reset-form"/);
+  assert.match(html, /id="rs-pass"/);
+  assert.match(html, /id="rs-pass2"/);
+  assert.match(html, /id="reset-email"/);
+  assert.match(app, /purpose: 'reset'/);
+  assert.match(app, /state\.resetToken = data\.resetToken/);
+  assert.match(app, /\/auth\/password\/reset/);
+  assert.match(app, /showPane\('reset'\)/);
+});
+
+test('สเต็ปที่ 3 เปลี่ยนป้ายตามงาน: สมัครสมาชิก = บัญชี, ลืมรหัสผ่าน = รหัสใหม่', function () {
+  assert.match(html, /data-step="3" hidden><span aria-hidden="true">3<\/span><b class="auth-step-text">บัญชี<\/b>/);
+  assert.match(app, /state\.intent === 'reset' \? 'รหัสใหม่' : 'บัญชี'/);
 });
 
 test('การสมัครสมาชิกอยู่ใน stepper เดิม: ขอ OTP ก่อน แล้วค่อยสร้างบัญชีด้วย signupToken', function () {

@@ -1386,6 +1386,7 @@ body.is-menu-open { overflow: hidden; }
   font-size: 11px;
   font-weight: 700;
 }
+.auth-step-text { font-weight: inherit; }
 .auth-step.is-current { color: var(--maroon); border-color: var(--maroon); }
 .auth-step.is-current span { background: var(--maroon); color: var(--cream); }
 .auth-step.is-done { color: #1c5741; border-color: #7bbfa3; }

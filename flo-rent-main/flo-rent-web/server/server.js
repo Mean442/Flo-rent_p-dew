@@ -30,7 +30,7 @@ const SESSION_TTL = 14 * 24 * 60 * 60 * 1000;
 const DAY = 86400000;
 const STARTED_AT = new Date().toISOString();
 /* ความสามารถของโค้ดที่รันอยู่ — หน้าแอดมินใช้ตรวจว่าเซิร์ฟเวอร์เป็นรุ่นเก่าหรือไม่ */
-const SERVER_FEATURES = ['verification', 'verification-photo'];
+const SERVER_FEATURES = ['verification', 'verification-photo', 'password-reset'];
 
 /* หมวดหมู่อยู่ในฐานข้อมูล (แอดมินเพิ่ม/ลบ/แก้ไขได้) — ค่าเริ่มต้นมาจาก seed */
 function ensureCategories() {
@@ -621,6 +621,7 @@ const OTP_RESEND_MS = 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
 const OTP_MAX_PER_HOUR = 5;
 const SIGNUP_TOKEN_TTL = 15 * 60 * 1000;
+const RESET_TOKEN_TTL = 15 * 60 * 1000;
 
 function otpStore() {
   if (!Array.isArray(store().otps)) store().otps = [];
@@ -647,6 +648,11 @@ function hashOtpLegacy(email, code) {
 /* token ชั่วคราวที่ได้หลังยืนยันอีเมลสำหรับสมัครสมาชิก — เก็บเฉพาะ hash */
 function hashOtpToken(token) {
   return crypto.createHash('sha256').update('signup|' + token).digest('hex');
+}
+
+/* token ชั่วคราวสำหรับตั้งรหัสผ่านใหม่ — แยก prefix เพื่อไม่ให้ token สมัครสมาชิกนำมาใช้แทนกันได้ */
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update('reset|' + token).digest('hex');
 }
 
 /* เทียบแบบ timing-safe เพราะรหัสสั้นและคงที่ 6 หลัก */
@@ -1070,7 +1076,7 @@ async function handleApi(req, res, url) {
     if (!allowAttempt(req, 'otp-request')) fail(429, 'ขอยืนยันหลายครั้งเกินไป กรุณารอสักครู่');
     if (otpUnavailable()) fail(503, 'ระบบส่งอีเมล OTP ยังไม่ถูกตั้งค่า — กรุณาติดต่อผู้ดูแลระบบ');
     const payload = await readBody(req);
-    const purpose = payload.purpose === 'signup' ? 'signup' : 'login';
+    const purpose = payload.purpose === 'signup' || payload.purpose === 'reset' ? payload.purpose : 'login';
     const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) fail(400, 'รูปแบบอีเมลไม่ถูกต้อง');
 
@@ -1105,7 +1111,7 @@ async function handleApi(req, res, url) {
     if (!allowAttempt(req, 'otp-verify')) fail(429, 'กรอกรหัสหลายครั้งเกินไป กรุณารอสักครู่');
     const payload = await readBody(req);
     const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
-    const purpose = payload.purpose === 'signup' ? 'signup' : 'login';
+    const purpose = payload.purpose === 'signup' || payload.purpose === 'reset' ? payload.purpose : 'login';
     const code = String(payload.code === undefined || payload.code === null ? '' : payload.code).replace(/\s+/g, '');
     if (!/^\d{6}$/.test(code)) fail(400, 'รหัส OTP ต้องเป็นตัวเลข 6 หลัก');
 
@@ -1142,6 +1148,26 @@ async function handleApi(req, res, url) {
       });
     }
 
+    /* ลืมรหัสผ่าน: ยืนยันอีเมลสำเร็จ → ออก token ชั่วคราวให้หน้าเว็บเอาไปตั้งรหัสใหม่ */
+    if (purpose === 'reset') {
+      const account = findUserByEmail(email);
+      if (!account) fail(404, 'ไม่พบบัญชีสำหรับอีเมลนี้');
+      if (account.status !== 'active') fail(403, 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อทีมงาน');
+      const resetToken = auth.newToken();
+      record.usedAt = Date.now();
+      record.attempts = OTP_MAX_ATTEMPTS;
+      record.resetTokenHash = hashResetToken(resetToken);
+      record.resetExpiresAt = Date.now() + RESET_TOKEN_TTL;
+      db.persist();
+      logEvent('auth.password.reset.request', 'ยืนยันอีเมลเพื่อตั้งรหัสผ่านใหม่: ' + email, account, account.id);
+      return sendJson(res, 200, {
+        ok: true,
+        email: email,
+        resetToken: resetToken,
+        expiresIn: Math.round(RESET_TOKEN_TTL / 1000)
+      });
+    }
+
     const user = findUserByEmail(email);
     if (!user) fail(404, 'ไม่พบบัญชีสำหรับอีเมลนี้');
     if (user.status !== 'active') fail(403, 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อทีมงาน');
@@ -1154,6 +1180,42 @@ async function handleApi(req, res, url) {
     logEvent('auth.otp.login', 'เข้าสู่ระบบด้วย OTP ทางอีเมล: ' + user.email, user, user.id);
     db.persist();
     return sendJson(res, 200, { token: token, user: publicUser(user) });
+  }
+
+  /* ตั้งรหัสผ่านใหม่ด้วย resetToken ที่ได้หลังยืนยัน OTP (ใช้ครั้งเดียว หมดอายุใน 15 นาที) */
+  if (key === 'POST /api/auth/password/reset') {
+    if (!allowAttempt(req, 'password-reset')) fail(429, 'พยายามตั้งรหัสผ่านใหม่หลายครั้งเกินไป กรุณารอสักครู่');
+    const payload = await readBody(req);
+    const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
+    const password = String(payload.password || '');
+    if (password.length < 6) fail(400, 'รหัสผ่านต้องอย่างน้อย 6 ตัวอักษร');
+    if (password.length > 200) fail(400, 'รหัสผ่านยาวเกินไป');
+
+    const resetToken = String(payload.resetToken || '').trim();
+    const record = /^[a-f0-9]{16,64}$/i.test(resetToken)
+      ? otpStore().filter(function (entry) {
+        return entry && entry.purpose === 'reset' && entry.resetTokenHash === hashResetToken(resetToken) &&
+          entry.resetUsedAt === undefined && entry.resetExpiresAt > Date.now();
+      })[0]
+      : null;
+    if (!record || record.email !== email) {
+      fail(401, 'การยืนยันเพื่อตั้งรหัสผ่านใหม่ไม่ถูกต้องหรือหมดอายุ — ขอรหัสใหม่');
+    }
+
+    const account = findUserByEmail(email);
+    if (!account) fail(404, 'ไม่พบบัญชีสำหรับอีเมลนี้');
+    if (account.status !== 'active') fail(403, 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อทีมงาน');
+
+    account.passHash = auth.hashPassword(password);
+    record.resetUsedAt = Date.now();
+    record.resetTokenHash = '';
+
+    /* รหัสผ่านเปลี่ยนแล้ว session เดิมทั้งหมดต้องใช้ไม่ได้อีก */
+    store().sessions = store().sessions.filter(function (item) { return item.userId !== account.id; });
+
+    logEvent('auth.password.reset', 'ตั้งรหัสผ่านใหม่ด้วย OTP ทางอีเมล: ' + account.email, account, account.id);
+    db.persist();
+    return sendJson(res, 200, { token: createSession(account), user: publicUser(account) });
   }
 
   if (key === 'POST /api/auth/logout') {

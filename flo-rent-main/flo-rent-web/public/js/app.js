@@ -1655,6 +1655,7 @@
       email: '',
       name: '',
       signupToken: '',
+      resetToken: '',
       back: 'email',
       resendTimer: null
     };
@@ -1699,6 +1700,8 @@
       if (mode === 'otp') return { kicker: 'ยืนยันตัวตน', title: 'กรอกรหัส 6 หลัก', sub: 'รหัสใช้ได้ครั้งเดียวและหมดอายุใน 10 นาที' };
       if (mode === 'password') return { kicker: 'เข้าสู่ระบบ', title: 'ด้วยรหัสผ่าน', sub: 'ผู้ดูแลระบบเข้าได้ทันที ผู้ใช้ทั่วไปต้องยืนยัน OTP จากอีเมลอีกขั้น' };
       if (mode === 'signup') return { kicker: 'ขั้นสุดท้าย', title: 'ตั้งค่าบัญชี', sub: 'ตั้งรหัสผ่านและข้อมูลพื้นฐานเพื่อเริ่มใช้งาน' };
+      if (mode === 'reset') return { kicker: 'ตั้งรหัสผ่านใหม่', title: 'รหัสผ่านใหม่', sub: 'ตั้งรหัสผ่านใหม่แล้วระบบจะพาเข้าสู่ระบบให้ทันที' };
+      if (state.intent === 'reset') return { kicker: 'ลืมรหัสผ่าน', title: 'อีเมลของคุณ', sub: 'เราจะส่งรหัส 6 หลักไปให้เพื่อยืนยันแล้วตั้งรหัสผ่านใหม่' };
       if (state.intent === 'signup') return { kicker: 'สมัครสมาชิก', title: 'เริ่มจากอีเมล', sub: 'กรอกชื่อและอีเมล แล้วยืนยันด้วยรหัส 6 หลักจากอีเมล' };
       return { kicker: 'เข้าสู่ระบบ', title: 'อีเมลของคุณ', sub: 'เราจะส่งรหัส 6 หลักไปให้ — ไม่ต้องจำรหัสผ่าน' };
     }
@@ -1706,11 +1709,13 @@
     function paintSteps(mode) {
       if (!steps) return;
       steps.hidden = mode === 'password';
-      var signup = state.intent === 'signup';
-      var current = mode === 'otp' ? 2 : (mode === 'signup' ? 3 : 1);
+      var third = state.intent === 'signup' || state.intent === 'reset';
+      var current = mode === 'otp' ? 2 : (mode === 'signup' || mode === 'reset' ? 3 : 1);
+      var thirdLabel = steps.querySelector('[data-step="3"] .auth-step-text');
+      if (thirdLabel) thirdLabel.textContent = state.intent === 'reset' ? 'รหัสใหม่' : 'บัญชี';
       Array.prototype.forEach.call(steps.querySelectorAll('[data-step]'), function (li) {
         var step = Number(li.getAttribute('data-step'));
-        li.hidden = step === 3 && !signup;
+        li.hidden = step === 3 && !third;
         li.classList.toggle('is-current', step === current);
         li.classList.toggle('is-done', step < current);
       });
@@ -1897,11 +1902,15 @@
         if (signup) {
           payload.purpose = 'signup';
           payload.name = name;
+        } else if (state.intent === 'reset') {
+          payload.purpose = 'reset';
         }
         var sent = await API.post('/auth/otp/request', payload);
         openOtp(sent, signup
           ? 'กรอกรหัสจากอีเมลเพื่อยืนยันว่าเป็นอีเมลของคุณ'
-          : 'ถ้าไม่เห็นอีเมล ให้ตรวจถังสแปมหรือกด "ส่งรหัสใหม่"');
+          : state.intent === 'reset'
+            ? 'กรอกรหัสเพื่อยืนยันก่อนตั้งรหัสผ่านใหม่'
+            : 'ถ้าไม่เห็นอีเมล ให้ตรวจถังสแปมหรือกด "ส่งรหัสใหม่"');
       } catch (err) {
         if (!signup && err.status === 404) {
           startSignup(email);
@@ -1920,6 +1929,7 @@
     });
 
     $('to-password').addEventListener('click', function () {
+      state.intent = 'login';
       state.email = $('auth-email').value.trim() || state.email;
       msg('pw-msg', '');
       showPane('password');
@@ -1959,6 +1969,19 @@
           msg('sg-msg', '');
           showPane('signup');
           $('sg-pass').focus();
+          return;
+        }
+
+        if (state.intent === 'reset') {
+          state.resetToken = data.resetToken || '';
+          $('reset-email').textContent = maskEmail(state.email);
+          $('rs-pass').value = '';
+          $('rs-pass2').value = '';
+          fieldError('rs-pass-error', '');
+          fieldError('rs-pass2-error', '');
+          msg('rs-msg', '');
+          showPane('reset');
+          $('rs-pass').focus();
           return;
         }
 
@@ -2058,13 +2081,91 @@
       $('auth-email').focus();
     });
 
-    /* ลืมรหัสผ่าน: ระบบไม่มี endpoint รีเซ็ต — ใช้ทางเข้า OTP ทางอีเมลแทนได้ทันที */
+    /* ---------- ลืมรหัสผ่าน: ยืนยัน OTP แล้วตั้งรหัสผ่านใหม่ ---------- */
+
+    async function beginReset(email, button) {
+      var target = String(email || '').trim();
+      if (!EMAIL_RE.test(target)) {
+        state.intent = 'reset';
+        msg('email-msg', 'ใส่อีเมลที่ใช้สมัครไว้ แล้วกดรับรหัสเพื่อตั้งรหัสผ่านใหม่', true);
+        showPane('email');
+        $('auth-email').focus();
+        return;
+      }
+
+      state.intent = 'reset';
+      state.email = target;
+      $('auth-email').value = target;
+      if (button) button.disabled = true;
+      try {
+        var sent = await API.post('/auth/otp/request', { email: target, purpose: 'reset' });
+        openOtp(sent, 'กรอกรหัสเพื่อยืนยันก่อนตั้งรหัสผ่านใหม่');
+      } catch (err) {
+        if (state.mode === 'password') msg('pw-msg', err.message);
+        else msg('email-msg', err.message);
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
+    $('to-reset').addEventListener('click', function () {
+      beginReset($('auth-email').value, $('to-reset'));
+    });
+
     $('pw-forgot').addEventListener('click', function () {
+      beginReset($('pw-email').value || $('auth-email').value, $('pw-forgot'));
+    });
+
+    $('rs-back').addEventListener('click', function () {
       state.intent = 'login';
-      msg('pw-msg', '');
+      state.resetToken = '';
+      msg('rs-msg', '');
       showPane('email');
-      msg('email-msg', 'ลืมรหัสผ่านไม่เป็นไร — ใส่อีเมลแล้วรับรหัส 6 หลักเพื่อเข้าสู่ระบบได้เลย', true);
       $('auth-email').focus();
+    });
+
+    wireToggle('rs-toggle', 'rs-pass');
+
+    $('reset-form').addEventListener('submit', async function (event) {
+      event.preventDefault();
+      var password = $('rs-pass').value;
+      var confirm = $('rs-pass2').value;
+      var button = $('rs-submit');
+
+      msg('rs-msg', '');
+      fieldError('rs-pass-error', '');
+      fieldError('rs-pass2-error', '');
+
+      if (password.length < 6) {
+        fieldError('rs-pass-error', 'รหัสผ่านอย่างน้อย 6 ตัวอักษร');
+        $('rs-pass').focus();
+        return;
+      }
+      if (password !== confirm) {
+        fieldError('rs-pass2-error', 'รหัสผ่านทั้งสองช่องไม่ตรงกัน');
+        $('rs-pass2').focus();
+        return;
+      }
+      if (!state.resetToken) {
+        msg('rs-msg', 'การยืนยันหมดอายุแล้ว — ขอรหัสใหม่อีกครั้ง');
+        showPane('email');
+        return;
+      }
+
+      button.disabled = true;
+      button.textContent = 'กำลังบันทึก...';
+      try {
+        var data = await API.post('/auth/password/reset', {
+          email: state.email,
+          resetToken: state.resetToken,
+          password: password
+        });
+        finish(data.token, 'ตั้งรหัสผ่านใหม่แล้ว');
+      } catch (err) {
+        msg('rs-msg', err.message);
+        button.disabled = false;
+        button.textContent = 'บันทึกรหัสผ่านใหม่';
+      }
     });
 
     function wireToggle(buttonId, inputId) {
