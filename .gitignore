@@ -17,3 +17,6 @@ server/.uidata/
 .tmp-node/
 .vercel
 .env*
+
+# เก็บไฟล์ตัวอย่าง env ไว้ใน repo เสมอ
+!.env.example
